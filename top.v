@@ -62,6 +62,24 @@ module rv32i_core_top (
     .id_valid_o  (id_valid)
   );
 
+  // Static not-taken branch predictor (observability only; PC already uses sequential fetch)
+  // You can tap pred_mispredict/pred_taken for counters or waveform checks.
+  wire bp_pred_taken, bp_pred_valid;
+  wire [31:0] bp_pred_target;
+  wire bp_mispredict;
+  bp_static_nt u_bp (
+    .clk                 (clk),
+    .rst_n               (rst_n),
+    .if_pc_i             (if_pc),
+    .if_instr_i          (imem_instr_i),
+    .if_valid_i          (1'b1),
+    .ex_redirect_valid_i (redirect_valid),
+    .pred_taken_o        (bp_pred_taken),
+    .pred_target_o       (bp_pred_target),
+    .pred_valid_o        (bp_pred_valid),
+    .pred_mispredict_o   (bp_mispredict)
+  );
+
   // ================= ID =================
   wire [31:0] id_rs1_val, id_rs2_val, id_imm;
   wire [4:0]  id_rs1, id_rs2, id_rd;
