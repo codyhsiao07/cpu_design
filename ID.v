@@ -84,7 +84,7 @@ module id_stage (
   wire [6:0] funct7  = id_instr_i[31:25];
   reg shift_right, shift_arith, is_auipc, is_lui;
   reg [2:0] mem_f3;
-  
+
   assign id_mem_funct3_o = mem_f3;
   assign id_shift_right_o  = shift_right;
   assign id_shift_arith_o  = shift_arith;
