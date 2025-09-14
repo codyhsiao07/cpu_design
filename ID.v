@@ -22,9 +22,9 @@ module regfile (
   assign rs1_o = (rs1_i == 5'd0) ? 32'b0 : rf[rs1_i];
   assign rs2_o = (rs2_i == 5'd0) ? 32'b0 : rf[rs2_i];
 
-  // write on posedge
-  always @(posedge clk or rst_n) begin
-    if (rst_n) begin
+  // write on posedge（rst_n 為低態有效）
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
       for (i = 0; i < 32; i = i + 1) rf[i] <= 32'b0;
     end else if (we_i && (rd_i != 5'd0)) begin
       rf[rd_i] <= wd_i;
@@ -71,7 +71,8 @@ module id_stage (
   output        id_shift_right_o,
   output        id_shift_arith_o,
   output        id_is_auipc_o,
-  output        id_is_lui_o
+  output        id_is_lui_o,
+  output [2:0] id_mem_funct3_o
 );
 
   // === 取欄位 ===
@@ -82,7 +83,9 @@ module id_stage (
   wire [4:0] rs2     = id_instr_i[24:20];
   wire [6:0] funct7  = id_instr_i[31:25];
   reg shift_right, shift_arith, is_auipc, is_lui;
-
+  reg [2:0] mem_f3;
+  
+  assign id_mem_funct3_o = mem_f3;
   assign id_shift_right_o  = shift_right;
   assign id_shift_arith_o  = shift_arith;
   assign id_is_auipc_o     = is_auipc;
@@ -194,6 +197,7 @@ module id_stage (
     shift_arith = 1'b0;
     is_auipc    = 1'b0;
     is_lui      = 1'b0;
+    mem_f3     = 3'b010;
 
     case (opcode)
       OP_LUI: begin
@@ -236,12 +240,14 @@ module id_stage (
         mem_read   = 1'b1;
         wb_sel     = WB_MEM;      // rd ← mem_rdata
         reg_write  = 1'b1;
+        mem_f3      = funct3;
       end
       OP_STORE: begin
         imm        = imm_s;
         alu_op     = ALU_ADD;     // addr = rs1 + imm
         alu_src_imm= 1'b1;
         mem_write  = 1'b1;
+        mem_f3      = funct3;
       end
       OP_OPIMM: begin
       imm         = imm_i;

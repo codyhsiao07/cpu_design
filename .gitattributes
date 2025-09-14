@@ -1,0 +1,6 @@
+# 統一所有 Verilog 檔案用 LF 換行
+*.v text eol=lf
+
+#（可選）統一一般文字檔也用 LF
+*.txt text eol=lf
+*.md  text eol=lf

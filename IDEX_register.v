@@ -35,6 +35,8 @@ module id_ex_reg (
   input         id_shift_arith_i,
   input         id_is_auipc_i,
   input         id_is_lui_i,
+  input  [2:0]  id_mem_funct3_i,
+  output [2:0]  ex_mem_funct3_o,
   output        ex_shift_right_o,
   output        ex_shift_arith_o,
   output        ex_is_auipc_o,
@@ -77,6 +79,7 @@ module id_ex_reg (
   reg [1:0]  wb_sel_q;
 
   reg        valid_q;
+  reg [2:0] mem_f3_q;
   reg shift_right_q, shift_arith_q, is_auipc_q, is_lui_q;
 
   // 下一拍值（含 stall/flush 邏輯）
@@ -84,6 +87,7 @@ module id_ex_reg (
   wire [31:0] rs1_d       = flush_i ? 32'b0       : (stall_i ? rs1_q      : id_rs1_val_i);
   wire [31:0] rs2_d       = flush_i ? 32'b0       : (stall_i ? rs2_q      : id_rs2_val_i);
   wire [31:0] imm_d       = flush_i ? 32'b0       : (stall_i ? imm_q      : id_imm_i);
+  wire [2:0] mem_f3_d = flush_i ? 3'b010 : (stall_i ? mem_f3_q : id_mem_funct3_i);
 
   wire [4:0]  rs1r_d      = flush_i ? 5'b0        : (stall_i ? rs1r_q     : id_rs1_i);
   wire [4:0]  rs2r_d      = flush_i ? 5'b0        : (stall_i ? rs2r_q     : id_rs2_i);
@@ -106,9 +110,9 @@ module id_ex_reg (
   wire is_auipc_d    = flush_i ? 1'b0 : (stall_i ? is_auipc_q    : id_is_auipc_i);
   wire is_lui_d      = flush_i ? 1'b0 : (stall_i ? is_lui_q      : id_is_lui_i);
 
-  // 寄存器本體
-  always @(posedge clk or rst_n) begin
-    if (rst_n) begin
+  // 寄存器本體（rst_n 為低態有效）
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
       pc_q        <= 32'b0;
       rs1_q       <= 32'b0;
       rs2_q       <= 32'b0;
@@ -131,6 +135,7 @@ module id_ex_reg (
       shift_arith_q <= 1'b0;
       is_auipc_q    <= 1'b0;
       is_lui_q      <= 1'b0;
+      mem_f3_q    <= 3'b010;
     end else begin
       pc_q        <= pc_d;
       rs1_q       <= rs1_d;
@@ -154,6 +159,7 @@ module id_ex_reg (
       shift_arith_q <= shift_arith_d;
       is_auipc_q    <= is_auipc_d;
       is_lui_q      <= is_lui_d;
+      mem_f3_q <= mem_f3_d;
     end
   end
 
@@ -182,5 +188,7 @@ module id_ex_reg (
   assign ex_shift_arith_o = shift_arith_q;
   assign ex_is_auipc_o    = is_auipc_q;
   assign ex_is_lui_o      = is_lui_q;
+
+  assign ex_mem_funct3_o = mem_f3_q;
 
 endmodule

@@ -28,9 +28,9 @@ module if_id_reg (
   wire [31:0] instr_d  = flush_i ? INSTR_NOP    : (stall_i ? instr_q  : if_instr_i);
   wire        valid_d  = flush_i ? 1'b0         : (stall_i ? valid_q  : if_valid_i);
 
-  // 寄存器
-  always @(posedge clk or rst_n) begin
-    if (rst_n) begin
+  // 寄存器（rst_n 為低態有效）
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
       pc_q    <= 32'b0;
       instr_q <= INSTR_NOP;
       valid_q <= 1'b0;

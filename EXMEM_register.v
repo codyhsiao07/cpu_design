@@ -19,6 +19,7 @@ module ex_mem_reg (
   input  [1:0]  ex_wb_sel_i,      // WB multiplexer 選擇
   input         ex_mem_read_i,    // 是否要做 memory read
   input         ex_mem_write_i,   // 是否要做 memory write
+  input  [2:0]  ex_mem_funct3_i,    
 
   // ====== 輸出到 MEM 階段 ======
   output [31:0] mem_pc4_o,
@@ -29,6 +30,7 @@ module ex_mem_reg (
   output [1:0]  mem_wb_sel_o,
   output        mem_mem_read_o,
   output        mem_mem_write_o,
+  output [2:0]  mem_size_o,
 
   output        mem_valid_o
 );
@@ -39,6 +41,8 @@ module ex_mem_reg (
   reg        reg_wr_q, mem_rd_q, mem_wr_q;
   reg [1:0]  wb_sel_q;
   reg        valid_q;
+  reg [2:0] mem_f3_q;
+  wire [2:0] mem_f3_d = flush_i ? 3'b010 : (stall_i ? mem_f3_q : ex_mem_funct3_i);
 
   // next-state logic（stall / flush 處理）
   wire [31:0] pc4_d    = flush_i ? 32'b0 : (stall_i ? pc4_q   : ex_pc4_i);
@@ -64,6 +68,7 @@ module ex_mem_reg (
       mem_rd_q  <= 1'b0;
       mem_wr_q  <= 1'b0;
       valid_q   <= 1'b0;
+      mem_f3_q <= 3'b010;
     end else begin
       pc4_q     <= pc4_d;
       alu_q     <= alu_d;
@@ -74,6 +79,7 @@ module ex_mem_reg (
       mem_rd_q  <= mem_rd_d;
       mem_wr_q  <= mem_wr_d;
       valid_q   <= valid_d;
+      mem_f3_q <= mem_f3_d;
     end
   end
 
@@ -87,5 +93,6 @@ module ex_mem_reg (
   assign mem_mem_read_o   = mem_rd_q;
   assign mem_mem_write_o  = mem_wr_q;
   assign mem_valid_o      = valid_q;
+  assign mem_size_o = mem_f3_q;
 
 endmodule

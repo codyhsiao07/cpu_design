@@ -35,9 +35,9 @@ module pc (
       pc_d = pc_q + 32'd4;      // 預設順序取指
   end
 
-  // PC 暫存器
-  always @(posedge clk or rst_n) begin
-    if (rst_n)
+  // PC 暫存器（rst_n 為低態有效）
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n)
       pc_q <= RESET_PC;
     else
       pc_q <= pc_d;
