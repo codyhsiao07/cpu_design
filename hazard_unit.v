@@ -1,11 +1,11 @@
-// hazard_unit.v — Pipeline hazard/control unit (commented)
+// hazard_unit.v -- Pipeline hazard/control unit (commented)
 //
 // Goals (without forwarding):
 // - Control hazards: when EX decides a redirect (taken branch/jump), flush younger stages.
 // - Structural/Memory stalls: when MEM is busy, hold upstream stages.
 // - Data hazards:
 //   * Load-use: if ID uses a register that EX will load to, insert one bubble
-//     (stall IF/ID for 1 cycle and flush ID/EX) — classic single-cycle interlock.
+//     (stall IF/ID for 1 cycle and flush ID/EX) -- classic single-cycle interlock.
 //   * Generic RAW w/o forwarding: if ID depends on a value still in EX or MEM
 //     (producer not yet at WB), stall IF/ID until the hazard clears.
 //     We do NOT stall EX for data RAW (let older instructions drain), only for MEM backpressure.
@@ -26,6 +26,9 @@ module hazard_unit (
   input  [4:0] mem_rd_i,
   input        mem_reg_write_i,
   input        mem_stall_i,    // memory/back-end is busy
+
+  // ===== IF structural stall (I-cache miss) =====
+  input        ifetch_stall_i,
 
   // ===== Redirect from EX (branch/jump taken) =====
   input        redirect_valid_i,
@@ -67,16 +70,18 @@ module hazard_unit (
   // - For data hazards:
   //   * load-use: stall IF/ID one cycle (bubble inserted via flush_idex_o)
   //   * generic RAW (no fwd): stall IF/ID until producer moves to WB
-  // With forwarding in place, generic RAW (ALU→ALU/PC4) can be resolved
+  // With forwarding in place, generic RAW (ALU->ALU/PC4) can be resolved
   // via MEM or WB forwarding without stalls. Only load-use still needs one bubble.
   wire stall_for_data = load_use_hazard;
 
-  assign stall_if_o    = mem_stall_i | stall_for_data;
-  assign stall_id_o    = mem_stall_i | stall_for_data;
+  wire structural_stall = mem_stall_i | ifetch_stall_i;
+
+  assign stall_if_o    = structural_stall | stall_for_data;
+  assign stall_id_o    = structural_stall | stall_for_data;
 
   // Do not stall EX for data RAW; let older instructions drain.
-  assign stall_ex_o    = mem_stall_i;
-  assign stall_exmem_o = mem_stall_i;
+  assign stall_ex_o    = structural_stall;
+  assign stall_exmem_o = structural_stall;
 
   // ---------- Flush logic ----------
   // - redirect: flush IF/ID and ID/EX to discard wrong-path instructions

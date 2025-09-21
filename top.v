@@ -1,6 +1,6 @@
-// top.v — Minimal 5-stage RV32I core top, with external IMEM/DMEM ports
-// - Wires: IF → IF/ID → ID → ID/EX → EX → EX/MEM → MEM → MEM/WB → WB
-// - Exposes simple IMEM (addr→instr) and DMEM (handshake) to testbench
+// top.v -- Minimal 5-stage RV32I core top, with external IMEM/DMEM ports
+// - Wires: IF -> IF/ID -> ID -> ID/EX -> EX -> EX/MEM -> MEM -> MEM/WB -> WB
+// - Exposes simple IMEM (addr->instr) and DMEM (handshake) to testbench
 // - Includes hazard_unit for load-use stall, MEM backpressure, and redirect flush
 module rv32i_core_top (
   input         clk,
@@ -42,7 +42,22 @@ module rv32i_core_top (
     .pc_o             (if_pc)
   );
 
-  assign imem_addr_o = if_pc;
+  wire [31:0] if_instr;
+  wire        icache_stall;
+  wire [31:0] icache_mem_addr;
+
+  icache u_icache (
+    .clk          (clk),
+    .rst_n        (rst_n),
+    .fetch_valid_i(~stall_if),
+    .fetch_addr_i (if_pc),
+    .fetch_data_o (if_instr),
+    .fetch_stall_o(icache_stall),
+    .mem_addr_o   (icache_mem_addr),
+    .mem_rdata_i  (imem_instr_i)
+  );
+
+  assign imem_addr_o = icache_mem_addr;
 
   // IF/ID
   wire [31:0] id_pc;
@@ -55,7 +70,7 @@ module rv32i_core_top (
     .stall_i     (stall_id),
     .flush_i     (flush_ifid),
     .if_pc_i     (if_pc),
-    .if_instr_i  (imem_instr_i),
+    .if_instr_i  (if_instr),
     .if_valid_i  (1'b1),
     .id_pc_o     (id_pc),
     .id_instr_o  (id_instr),
@@ -71,7 +86,7 @@ module rv32i_core_top (
     .clk                 (clk),
     .rst_n               (rst_n),
     .if_pc_i             (if_pc),
-    .if_instr_i          (imem_instr_i),
+    .if_instr_i          (if_instr),
     .if_valid_i          (1'b1),
     .ex_redirect_valid_i (redirect_valid),
     .pred_taken_o        (bp_pred_taken),
@@ -199,6 +214,17 @@ module rv32i_core_top (
   wire        ex_br_taken;
   wire [31:0] ex_br_target;
 
+  // Forward dependencies from later stages for forwarding
+  wire        mem_valid;
+  wire        mem_reg_write;
+  wire [1:0]  mem_wb_sel;
+  wire [4:0]  mem_rd;
+  wire [31:0] mem_alu_result;
+  wire [31:0] mem_pc4;
+  wire        wb_rd_wen;
+  wire [4:0]  wb_rd;
+  wire [31:0] wb_wdata;
+
   // Forwarding unit: prepare EX operands with bypass from MEM/WB
   wire [31:0] ex_rs1_val_fwd, ex_rs2_val_fwd;
   forward_unit u_fwd (
@@ -244,10 +270,8 @@ module rv32i_core_top (
   );
 
   // ================= EX/MEM =================
-  wire [31:0] mem_pc4, mem_alu_result, mem_store_data;
-  wire [4:0]  mem_rd;
-  wire        mem_reg_write, mem_mem_read, mem_mem_write, mem_valid;
-  wire [1:0]  mem_wb_sel;
+  wire [31:0] mem_store_data;
+  wire        mem_mem_read, mem_mem_write;
   wire [2:0]  mem_size;
 
   ex_mem_reg u_ex_mem (
@@ -280,6 +304,21 @@ module rv32i_core_top (
   // ================= MEM =================
   wire [31:0] mem_load_rdata;
   wire        mem_stall;
+  wire        dcache_core_req;
+  wire        dcache_core_we;
+  wire [31:0] dcache_core_addr;
+  wire [31:0] dcache_core_wdata;
+  wire [3:0]  dcache_core_wstrb;
+  wire        dcache_core_ready;
+  wire        dcache_core_rvalid;
+  wire [31:0] dcache_core_rdata;
+
+  wire        dcache_mem_req;
+  wire        dcache_mem_we;
+  wire [31:0] dcache_mem_addr;
+  wire [31:0] dcache_mem_wdata;
+  wire [3:0]  dcache_mem_wstrb;
+
 
   mem_stage u_mem (
     .clk               (clk),
@@ -290,23 +329,48 @@ module rv32i_core_top (
     .mem_mem_read_i    (mem_mem_read),
     .mem_mem_write_i   (mem_mem_write),
     .mem_size_i        (mem_size),
-    .dmem_req_o        (dmem_req_o),
-    .dmem_we_o         (dmem_we_o),
-    .dmem_addr_o       (dmem_addr_o),
-    .dmem_wdata_o      (dmem_wdata_o),
-    .dmem_wstrb_o      (dmem_wstrb_o),
-    .dmem_ready_i      (dmem_ready_i),
-    .dmem_rvalid_i     (dmem_rvalid_i),
-    .dmem_rdata_i      (dmem_rdata_i),
+    .dmem_req_o        (dcache_core_req),
+    .dmem_we_o         (dcache_core_we),
+    .dmem_addr_o       (dcache_core_addr),
+    .dmem_wdata_o      (dcache_core_wdata),
+    .dmem_wstrb_o      (dcache_core_wstrb),
+    .dmem_ready_i      (dcache_core_ready),
+    .dmem_rvalid_i     (dcache_core_rvalid),
+    .dmem_rdata_i      (dcache_core_rdata),
     .mem_load_rdata_o  (mem_load_rdata),
     .mem_stall_o       (mem_stall)
   );
 
+  dcache u_dcache (
+    .clk           (clk),
+    .rst_n         (rst_n),
+    .core_req_i    (dcache_core_req),
+    .core_we_i     (dcache_core_we),
+    .core_addr_i   (dcache_core_addr),
+    .core_wdata_i  (dcache_core_wdata),
+    .core_wstrb_i  (dcache_core_wstrb),
+    .core_ready_o  (dcache_core_ready),
+    .core_rvalid_o (dcache_core_rvalid),
+    .core_rdata_o  (dcache_core_rdata),
+    .mem_req_o     (dcache_mem_req),
+    .mem_we_o      (dcache_mem_we),
+    .mem_addr_o    (dcache_mem_addr),
+    .mem_wdata_o   (dcache_mem_wdata),
+    .mem_wstrb_o   (dcache_mem_wstrb),
+    .mem_ready_i   (dmem_ready_i),
+    .mem_rvalid_i  (dmem_rvalid_i),
+    .mem_rdata_i   (dmem_rdata_i)
+  );
+
+  assign dmem_req_o   = dcache_mem_req;
+  assign dmem_we_o    = dcache_mem_we;
+  assign dmem_addr_o  = dcache_mem_addr;
+  assign dmem_wdata_o = dcache_mem_wdata;
+  assign dmem_wstrb_o = dcache_mem_wstrb;
+
+
   // ================= MEM/WB =================
   wire        wb_valid;
-  wire [4:0]  wb_rd;
-  wire        wb_rd_wen;
-  wire [31:0] wb_wdata;
 
   mem_wb u_mem_wb (
     .clk          (clk),
@@ -363,6 +427,7 @@ module rv32i_core_top (
     .mem_rd_i          (mem_rd),
     .mem_reg_write_i   (mem_reg_write),
     .mem_stall_i       (mem_stall),
+    .ifetch_stall_i   (icache_stall),
     // Redirect
     .redirect_valid_i  (redirect_valid),
     // Outputs
@@ -375,3 +440,6 @@ module rv32i_core_top (
   );
 
 endmodule
+
+
+
