@@ -304,6 +304,8 @@ module rv32i_core_top (
   // ================= MEM =================
   wire [31:0] mem_load_rdata;
   wire        mem_stall;
+
+  // Core <-> D-cache wires
   wire        dcache_core_req;
   wire        dcache_core_we;
   wire [31:0] dcache_core_addr;
@@ -313,13 +315,12 @@ module rv32i_core_top (
   wire        dcache_core_rvalid;
   wire [31:0] dcache_core_rdata;
 
+  // D-cache <-> external memory wires
   wire        dcache_mem_req;
   wire        dcache_mem_we;
   wire [31:0] dcache_mem_addr;
   wire [31:0] dcache_mem_wdata;
   wire [3:0]  dcache_mem_wstrb;
-
-
   mem_stage u_mem (
     .clk               (clk),
     .rst_n             (rst_n),
@@ -372,12 +373,17 @@ module rv32i_core_top (
   // ================= MEM/WB =================
   wire        wb_valid;
 
+  // WB 提交單拍：
+  // - LOAD：以 D-cache 的 rvalid 作為提交脈衝
+  // - 非 LOAD：僅在 MEM 不停滯時提交，避免同一指令在 MEM 停滯期間重複提交
+  wire wb_i_valid = mem_mem_read ? dcache_core_rvalid : (mem_valid & ~mem_stall);
+
   mem_wb u_mem_wb (
     .clk          (clk),
     .rst_n        (rst_n),
-    .i_valid      (mem_valid),   // keep valid from EX/MEM
+    .i_valid      (wb_i_valid),
     .i_flush      (1'b0),
-    .i_stall      (mem_stall),   // hold outputs when memory is busy
+    .i_stall      (1'b0),
     .i_rd         (mem_rd),
     .i_rd_wen     (mem_reg_write),
     .i_alu_result (mem_alu_result),
@@ -417,6 +423,7 @@ module rv32i_core_top (
     .id_valid_i        (id_valid),
     .id_rs1_i          (id_rs1),
     .id_rs2_i          (id_rs2),
+    .id_is_store_i     (id_mem_write),
     // EX
     .ex_valid_i        (ex_valid),
     .ex_rd_i           (ex_rd),
@@ -440,6 +447,3 @@ module rv32i_core_top (
   );
 
 endmodule
-
-
-

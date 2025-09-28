@@ -1,6 +1,7 @@
-# 統一所有 Verilog 檔案用 LF 換行
-*.v text eol=lf
-
-#（可選）統一一般文字檔也用 LF
+# Normalize line endings for repository
+*.v   text eol=lf
+*.sv  text eol=lf
+*.vh  text eol=lf
 *.txt text eol=lf
 *.md  text eol=lf
+

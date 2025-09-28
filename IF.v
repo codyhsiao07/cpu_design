@@ -1,23 +1,23 @@
-// pc.v — RV32I, 4-byte aligned, no I-Cache
+// pc.v -- RV32I, 4-byte aligned PC, no I-Cache inside this block
 module pc (
   input         clk,
   input         rst_n,
 
-  // pipeline control
-  input         stall_i,            // IF 停住 (cache miss / hazard 等)
-  input         redirect_valid_i,   // 分支/跳躍有效
-  input  [31:0] redirect_pc_i,      // 分支/跳躍目標
+  // Pipeline control
+  input         stall_i,            // IF structural/hazard stall
+  input         redirect_valid_i,   // Branch/jump redirect valid
+  input  [31:0] redirect_pc_i,      // Branch/jump redirect target
 
-  output [31:0] pc_o                // 當前 PC (送到 IMEM)
+  output [31:0] pc_o                // Current PC (to IMEM)
 );
 
-  // 固定參數：重置起始位址
+  // Parameters: reset PC value
   parameter RESET_PC = 32'h1000_0000;
 
-  reg [31:0] pc_q;   // 暫存 PC
-  reg [31:0] pc_d;   // 下一個 PC
+  reg [31:0] pc_q;   // Current PC
+  reg [31:0] pc_d;   // Next PC
 
-  // 對齊函數 (4-byte)
+  // 4-byte alignment helper
   function [31:0] align4;
     input [31:0] a;
     begin
@@ -25,17 +25,17 @@ module pc (
     end
   endfunction
 
-  // 下一個 PC 的選擇
+  // Next PC selection
   always @(*) begin
     if (redirect_valid_i)
       pc_d = align4(redirect_pc_i);
     else if (stall_i)
-      pc_d = pc_q;              // 停住不變
+      pc_d = pc_q;              // Hold on stall
     else
-      pc_d = pc_q + 32'd4;      // 預設順序取指
+      pc_d = pc_q + 32'd4;      // Sequential fetch
   end
 
-  // PC 暫存器（rst_n 為低態有效）
+  // PC register (async reset low)
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n)
       pc_q <= RESET_PC;
@@ -46,3 +46,4 @@ module pc (
   assign pc_o = pc_q;
 
 endmodule
+

@@ -1,146 +1,163 @@
-// mem_stage.v — 基礎 MEM 階段（RV32I，支援 LB/LH/LW/LBU/LHU、SB/SH/SW）
-// 介面：簡單資料匯流排握手
-//   req/we/addr/wdata/wstrb → slave
-//   ready/rvalid/rdata      ← slave
-//
-// 備註：假設對齊正確（LW addr[1:0]=0、LH addr[0]=0）；未實作例外。
-//      之後可在外層加入 misalign 檢查與 trap。
+// mem_stage.v -- RV32I MEM stage (Verilog-2001)
+// Supports LB/LH/LW/LBU/LHU and SB/SH/SW
+// Handshake to data memory: req/we/addr/wdata/wstrb + ready/rvalid/rdata
 
 module mem_stage (
   input         clk,
   input         rst_n,
 
-  // ====== 來自 EX/MEM 暫存器 ======
-  input         mem_valid_i,           // 這拍有效指令
-  input  [31:0] mem_alu_result_i,      // 位址 (rs1+imm)
-  input  [31:0] mem_store_data_i,      // 要寫入的資料 (rs2)
-  input         mem_mem_read_i,        // 1: LOAD
-  input         mem_mem_write_i,       // 1: STORE
-  input  [2:0]  mem_size_i,            // funct3：LOAD/STORE 大小編碼
+  // From EX/MEM register
+  input         mem_valid_i,
+  input  [31:0] mem_alu_result_i,  // address (rs1 + imm)
+  input  [31:0] mem_store_data_i,  // store data (rs2)
+  input         mem_mem_read_i,    // 1: LOAD
+  input         mem_mem_write_i,   // 1: STORE
+  input  [2:0]  mem_size_i,        // funct3 for load/store size
 
-  // ====== 對資料記憶體匯流排（之後可換成 AXI-Lite/MIG wrapper）======
-  output        dmem_req_o,            // 要求有效（read 或 write）
-  output        dmem_we_o,             // 1: write, 0: read
+  // To data memory (simple handshake)
+  output        dmem_req_o,
+  output        dmem_we_o,
   output [31:0] dmem_addr_o,
   output [31:0] dmem_wdata_o,
-  output [3:0]  dmem_wstrb_o,          // byte enable
-  input         dmem_ready_i,          // write 接受 / read 發出
-  input         dmem_rvalid_i,         // read 資料有效
+  output [3:0]  dmem_wstrb_o,
+  input         dmem_ready_i,
+  input         dmem_rvalid_i,
   input  [31:0] dmem_rdata_i,
 
-  // ====== 輸出到 MEM/WB 暫存器或 WB 階段 ======
-  output [31:0] mem_load_rdata_o,      // 已經做過 sign/zero-extend 的讀取資料
-  output        mem_stall_o            // 需停住上游（等待記憶體）
+  // To MEM/WB and upstream control
+  output [31:0] mem_load_rdata_o,
+  output        mem_stall_o
 );
 
-  // -------- 取便利用的欄位 --------
+  // Convenience (current input view)
   wire [31:0] addr   = mem_alu_result_i;
-  wire [1:0]  addr2  = addr[1:0];      // byte 選擇
+  wire [1:0]  addr2  = addr[1:0];
   wire        is_load  = mem_valid_i & mem_mem_read_i;
   wire        is_store = mem_valid_i & mem_mem_write_i;
 
-  // -------- 根據 size (funct3) 產生 write strobe / write data --------
-  // LOAD/STORE 的 funct3 定義（精簡）
-  localparam [2:0] F3_LB  = 3'b000,
-                   F3_LH  = 3'b001,
-                   F3_LW  = 3'b010,
-                   F3_LBU = 3'b100,
-                   F3_LHU = 3'b101;
-  // STORE 共用編碼（與 LOAD 同一組意義：000=byte,001=half,010=word）
-  localparam [2:0] F3_SB  = 3'b000,
-                   F3_SH  = 3'b001,
-                   F3_SW  = 3'b010;
+  // Size encodings (funct3)
+  localparam [2:0] F3_LB  = 3'b000;
+  localparam [2:0] F3_LH  = 3'b001;
+  localparam [2:0] F3_LW  = 3'b010;
+  localparam [2:0] F3_LBU = 3'b100;
+  localparam [2:0] F3_LHU = 3'b101;
+  localparam [2:0] F3_SB  = 3'b000;
+  localparam [2:0] F3_SH  = 3'b001;
+  localparam [2:0] F3_SW  = 3'b010;
 
-  reg [3:0]  wstrb;
-  reg [31:0] wdata_aligned;
+  // ================= Transaction state =================
+  reg        busy_q;         // 1 while a transaction is in-flight
+  reg        txn_is_load_q;  // latched type
+  reg [31:0] txn_addr_q;     // latched address (aligned)
+  reg [1:0]  txn_addr2_q;    // latched byte offset
+  reg [2:0]  txn_size_q;     // latched size/funct3
+  reg [3:0]  txn_wstrb_q;    // latched store strobes
+  reg [31:0] txn_wdata_q;    // latched store data (aligned)
+  // Simple de-dup state for identical upstream request shapes
+  reg        seen_q;
+  reg        cap_is_load_q;
+  reg        cap_is_store_q;
+  reg [31:0] cap_addr_q;
 
-  always @(*) begin
-    wstrb        = 4'b0000;
-    wdata_aligned= 32'b0;
-    if (is_store) begin
-      case (mem_size_i)
-        F3_SB: begin
-          wstrb = 4'b0001 << addr2;
-          // 將欲寫入的 byte 複製到所有 lane，配合 wstrb 生效於對應 byte
-          wdata_aligned = {4{mem_store_data_i[7:0]}};
-        end
-        F3_SH: begin
-          wstrb = (addr2[1]) ? 4'b1100 : 4'b0011;
-          wdata_aligned = {2{mem_store_data_i[15:0]}};
-        end
-        F3_SW: begin
-          wstrb = 4'b1111;
-          wdata_aligned = mem_store_data_i;
-        end
-        default: begin
-          wstrb = 4'b0000;
-          wdata_aligned = 32'b0;
-        end
+  // Start condition (one-shot when not busy, and not seen same request shape)
+  wire same_shape = (is_load == cap_is_load_q) && (is_store == cap_is_store_q) && (addr == cap_addr_q);
+  wire seen_now   = seen_q & mem_valid_i & same_shape;
+  wire start_txn  = (is_load | is_store) & ~busy_q & ~seen_now;
+
+  // Compute store alignment for current inputs (used when start_txn)
+  function [3:0] mk_wstrb;
+    input [2:0] size_f3; input [1:0] ofs;
+    begin
+      case (size_f3)
+        F3_SB: mk_wstrb = (4'b0001 << ofs);
+        F3_SH: mk_wstrb = (ofs[1]) ? 4'b1100 : 4'b0011;
+        default: mk_wstrb = 4'b1111; // SW
       endcase
     end
-  end
+  endfunction
 
-  // -------- 讀取資料擴展（sign/zero extend） --------
-  reg [31:0] load_ext;
+  function [31:0] align_store_data;
+    input [2:0] size_f3; input [31:0] sd;
+    begin
+      case (size_f3)
+        F3_SB: align_store_data = {4{sd[7:0]}};
+        F3_SH: align_store_data = {2{sd[15:0]}};
+        default: align_store_data = sd; // SW
+      endcase
+    end
+  endfunction
 
-  wire [7:0]  rbyte = (addr2==2'd0) ? dmem_rdata_i[7:0]   :
-                      (addr2==2'd1) ? dmem_rdata_i[15:8]  :
-                      (addr2==2'd2) ? dmem_rdata_i[23:16] : dmem_rdata_i[31:24];
-
-  wire [15:0] rhalf = addr2[1] ? dmem_rdata_i[31:16] : dmem_rdata_i[15:0];
-
-  always @(*) begin
-    case (mem_size_i)
-      F3_LB : load_ext = {{24{rbyte[7]}},  rbyte};     // 有號擴展
-      F3_LBU: load_ext = {24'b0,          rbyte};      // 無號擴展
-      F3_LH : load_ext = {{16{rhalf[15]}}, rhalf};     // 有號擴展
-      F3_LHU: load_ext = {16'b0,          rhalf};      // 無號擴展
-      F3_LW : load_ext = dmem_rdata_i;
-      default: load_ext = dmem_rdata_i;                // 預設當作 LW
-    endcase
-  end
-
-  assign mem_load_rdata_o = load_ext;
-
-  // -------- 簡單握手狀態機：處理等待 rvalid/ready --------
-  reg busy_q, is_load_q;  // 記錄當前傳輸型態（讀/寫）
-
-  // 何時發起一筆新交易
-  wire kick = (is_load | is_store) & ~busy_q;
-
-  // 對外輸出：維持 req 直到事畢
-  assign dmem_req_o   = busy_q | kick;
-  assign dmem_we_o    = is_store | (busy_q & ~is_load_q);
-  assign dmem_addr_o  = addr;           // 基礎版：發起當拍即採用當前 addr
-  assign dmem_wdata_o = wdata_aligned;
-  assign dmem_wstrb_o = wstrb;
-
-  // 交易何時完成？
-  wire done_write = (busy_q ? (~is_load_q & dmem_ready_i)
-                            : (is_store  & dmem_ready_i));     // 寫：ready 即完成
-  wire done_read  = (busy_q ? ( is_load_q & dmem_rvalid_i)
-                            : (is_load   & dmem_rvalid_i));    // 讀：rvalid 即完成
-  wire done = done_write | done_read;
-
-  // busy 狀態寄存
+  // Latch transaction metadata
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      busy_q    <= 1'b0;
-      is_load_q <= 1'b0;
+      busy_q         <= 1'b0;
+      txn_is_load_q  <= 1'b0;
+      txn_addr_q     <= 32'h0;
+      txn_addr2_q    <= 2'b00;
+      txn_size_q     <= 3'b010;
+      txn_wstrb_q    <= 4'b0000;
+      txn_wdata_q    <= 32'h0;
+      seen_q         <= 1'b0;
+      cap_is_load_q  <= 1'b0;
+      cap_is_store_q <= 1'b0;
+      cap_addr_q     <= 32'h0;
     end else begin
-      // 起單
-      if (kick) begin
-        busy_q    <= 1'b1;
-        is_load_q <= is_load;
+      // Start or continue
+      if (start_txn) begin
+        busy_q        <= 1'b1;
+        txn_is_load_q <= is_load;
+        txn_addr_q    <= addr;
+        txn_addr2_q   <= addr2;
+        txn_size_q    <= mem_size_i;
+        txn_wstrb_q   <= mk_wstrb(mem_size_i, addr2);
+        txn_wdata_q   <= align_store_data(mem_size_i, mem_store_data_i);
+        // mark as seen for this shape
+        seen_q        <= 1'b1;
+        cap_is_load_q  <= is_load;
+        cap_is_store_q <= is_store;
+        cap_addr_q     <= addr;
       end
-      // 完成
-      if (done) begin
-        busy_q    <= 1'b0;
+
+      // Completion clears busy
+      if ((busy_q &&  txn_is_load_q && dmem_rvalid_i) ||
+          (busy_q && !txn_is_load_q && dmem_ready_i)) begin
+        busy_q <= 1'b0;
+      end
+
+      // Release de-dup marker when upstream changes or deasserts
+      if (!mem_valid_i) begin
+        seen_q <= 1'b0;
+      end else if (!same_shape) begin
+        seen_q <= 1'b0;
       end
     end
   end
 
-  // 需要讓上游停住的條件（交易未完成）
-  assign mem_stall_o = busy_q | kick;  // 發起當拍也視為需要停住一拍（保守作法）
+  // Drive memory (issue in start cycle, hold while busy)
+  assign dmem_req_o   = busy_q | start_txn;
+  assign dmem_we_o    = start_txn ? is_store    : ~txn_is_load_q;
+  assign dmem_addr_o  = start_txn ? addr        : txn_addr_q;
+  assign dmem_wdata_o = start_txn ? align_store_data(mem_size_i, mem_store_data_i) : txn_wdata_q;
+  assign dmem_wstrb_o = start_txn ? mk_wstrb(mem_size_i, addr2)                     : txn_wstrb_q;
+
+  // Load data sign/zero-extend based on latched info
+  wire [7:0]  rbyte = (txn_addr2_q==2'd0) ? dmem_rdata_i[7:0]   :
+                      (txn_addr2_q==2'd1) ? dmem_rdata_i[15:8]  :
+                      (txn_addr2_q==2'd2) ? dmem_rdata_i[23:16] : dmem_rdata_i[31:24];
+  wire [15:0] rhalf = txn_addr2_q[1] ? dmem_rdata_i[31:16] : dmem_rdata_i[15:0];
+  reg [31:0] load_ext;
+  always @(*) begin
+    case (txn_size_q)
+      F3_LB : load_ext = {{24{rbyte[7]}},  rbyte};
+      F3_LBU: load_ext = {24'b0,          rbyte};
+      F3_LH : load_ext = {{16{rhalf[15]}}, rhalf};
+      F3_LHU: load_ext = {16'b0,          rhalf};
+      default: load_ext = dmem_rdata_i; // LW or default
+    endcase
+  end
+  assign mem_load_rdata_o = load_ext;
+
+  // Backpressure upstream：交易發起當拍與忙碌期間皆施壓
+  assign mem_stall_o = busy_q | start_txn;
 
 endmodule

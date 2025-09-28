@@ -14,6 +14,7 @@ module hazard_unit (
   input        id_valid_i,
   input  [4:0] id_rs1_i,
   input  [4:0] id_rs2_i,
+  input        id_is_store_i,
 
   // ===== EX stage (instruction in execute) =====
   input        ex_valid_i,
@@ -65,28 +66,40 @@ module hazard_unit (
   // so we don't stall for WB.
   wire generic_raw = (raw_ex && ex_reg_write_i) | (raw_mem && mem_reg_write_i);
 
+  // Store-data conservative interlock: if ID is a STORE and rs2 depends on a
+  // producer in EX or MEM that will write back, force a bubble in ID/EX to
+  // guarantee correct store data timing (avoid using stale ID/EX value).
+  wire store_data_hazard = id_is_store_i & (
+      (ex_valid_i  & ex_reg_write_i  & raw_ex_rs2) |
+      (mem_valid_i & mem_reg_write_i & raw_mem_rs2)
+    );
+
   // ---------- Stall logic ----------
   // - Always propagate memory backpressure upstream.
-  // - For data hazards:
+  // - Data hazards:
   //   * load-use: stall IF/ID one cycle (bubble inserted via flush_idex_o)
-  //   * generic RAW (no fwd): stall IF/ID until producer moves to WB
-  // With forwarding in place, generic RAW (ALU->ALU/PC4) can be resolved
-  // via MEM or WB forwarding without stalls. Only load-use still needs one bubble.
-  wire stall_for_data = load_use_hazard;
+  //   * generic RAW: conservative mode, stall IF/ID to avoid misalignment
+  //   * store-data: same as above, and will also bubble ID/EX (see flush)
+  // With forwarding enabled, do not stall on generic RAW; only load-use and
+  // store-data hazards require bubbles/stalls.
+  wire stall_for_data = load_use_hazard | store_data_hazard;
 
-  wire structural_stall = mem_stall_i | ifetch_stall_i;
+  // Separate structural stalls for front/back of pipe
+  wire structural_stall_front = ifetch_stall_i | mem_stall_i; // IF/ID
+  wire structural_stall_back  = mem_stall_i;                  // EX/EXMEM only MEM
 
-  assign stall_if_o    = structural_stall | stall_for_data;
-  assign stall_id_o    = structural_stall | stall_for_data;
+  assign stall_if_o    = structural_stall_front | stall_for_data;
+  assign stall_id_o    = structural_stall_front | stall_for_data;
 
-  // Do not stall EX for data RAW; let older instructions drain.
-  assign stall_ex_o    = structural_stall;
-  assign stall_exmem_o = structural_stall;
+  // Do not stall EX for I-fetch stall; let older instructions drain.
+  assign stall_ex_o    = structural_stall_back;
+  assign stall_exmem_o = structural_stall_back;
 
   // ---------- Flush logic ----------
   // - redirect: flush IF/ID and ID/EX to discard wrong-path instructions
   // - load-use: flush ID/EX to insert a bubble
+  // - store-data: flush ID/EX to insert a bubble (ensure correct rs2 store data)
   assign flush_ifid_o = redirect_valid_i;
-  assign flush_idex_o = redirect_valid_i | load_use_hazard;
+  assign flush_idex_o = redirect_valid_i | load_use_hazard | store_data_hazard;
 
 endmodule
