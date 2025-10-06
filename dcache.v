@@ -1,361 +1,355 @@
-// dcache.v -- 16KB 4-way set-associative data cache (write-back, write-allocate)
-// - Core interface mirrors the existing MEM stage handshake (req/we/addr/wdata/wstrb + ready/rvalid)
-// - Backing memory interface reuses the same simple handshake (req/we/addr/wdata/wstrb / ready / rvalid)
-// - 1-cycle hit latency (responses returned the cycle after request is observed)
-// - Miss handling: choose victim via pseudo-LRU; write back dirty lines before refill
+// -----------------------------------------------------------------------------
+// 32KB, 2-way set associative data cache (write-back, write-allocate)
+// Interface matches core MEM stage handshake via storage_top bridge.
+// -----------------------------------------------------------------------------
+module dcache #(
+  parameter integer XLEN            = 32,
+  parameter integer CACHE_BYTES     = 32768,
+  parameter integer LINE_BYTES      = 32,
+  parameter integer WAYS            = 2,
+  parameter integer WRITEBUF_DEPTH  = 1
+)(
+  input                       clk,
+  input                       rstn,
 
-module dcache (
-  input         clk,
-  input         rst_n,
+  // Core-side request / response
+  input                       cpu_req_valid,
+  output                      cpu_req_ready,
+  input                       cpu_req_rw,        // 0=load, 1=store
+  input      [XLEN-1:0]       cpu_req_addr,
+  input      [XLEN-1:0]       cpu_req_wdata,
+  input      [XLEN/8-1:0]     cpu_req_wstrb,
+  output                      cpu_resp_valid,
+  output reg [XLEN-1:0]       cpu_resp_rdata,
+  output                      cpu_resp_err,
+  output                      cpu_stall_ld_miss,
+  output                      cpu_stall_st_buf,
 
-  // Core side (from MEM stage)
-  input         core_req_i,
-  input         core_we_i,
-  input  [31:0] core_addr_i,
-  input  [31:0] core_wdata_i,
-  input  [3:0]  core_wstrb_i,
-  output        core_ready_o,
-  output        core_rvalid_o,
-  output [31:0] core_rdata_o,
-
-  // Backing memory side (to be hooked to DRAM controller later)
-  output        mem_req_o,
-  output        mem_we_o,
-  output [31:0] mem_addr_o,
-  output [31:0] mem_wdata_o,
-  output [3:0]  mem_wstrb_o,
-  input         mem_ready_i,
-  input         mem_rvalid_i,
-  input  [31:0] mem_rdata_i
+  // External memory line interface
+  output                      mem_req_valid,
+  input                       mem_req_ready,
+  output                      mem_req_write,
+  output     [XLEN-1:0]       mem_req_addr,
+  output     [LINE_BYTES*8-1:0] mem_req_wdata,
+  output     [LINE_BYTES-1:0] mem_req_wstrb,
+  input                       mem_resp_valid,
+  input      [LINE_BYTES*8-1:0] mem_resp_rdata,
+  input                       mem_resp_err
 );
 
-  // ------------------------------------------------------------------
-  // Cache geometry constants
-  localparam integer LINE_BYTES  = 16;
-  localparam integer LINE_WORDS  = LINE_BYTES / 4;
-  localparam integer WORD_SEL_BITS = 2;
-  localparam integer NUM_WAYS    = 4;
-  localparam integer CACHE_BYTES = 16 * 1024;
-  localparam integer NUM_LINES   = CACHE_BYTES / LINE_BYTES;
-  localparam integer NUM_SETS    = NUM_LINES / NUM_WAYS;
-  localparam integer OFFSET_BITS = 4;
-  localparam integer INDEX_BITS  = 8;
-  localparam integer TAG_BITS    = 32 - OFFSET_BITS - INDEX_BITS;
-
-  // Convenience wires for the incoming address
-  wire [31:0] addr_aligned  = {core_addr_i[31:2], 2'b00};
-  wire [INDEX_BITS-1:0] req_index = addr_aligned[OFFSET_BITS + INDEX_BITS - 1:OFFSET_BITS];
-  wire [TAG_BITS-1:0]   req_tag   = addr_aligned[31:32-TAG_BITS];
-  wire [1:0]            req_word  = addr_aligned[3:2];
-  wire [INDEX_BITS+WORD_SEL_BITS-1:0] req_line_idx = {req_index, req_word};
-
-  // ------------------------------------------------------------------
-  // Arrays
-  reg [TAG_BITS-1:0] tag_array   [0:NUM_WAYS-1][0:NUM_SETS-1];
-  reg                valid_array [0:NUM_WAYS-1][0:NUM_SETS-1];
-  reg                dirty_array [0:NUM_WAYS-1][0:NUM_SETS-1];
-  reg [31:0]         data_array  [0:NUM_WAYS-1][0:NUM_SETS*LINE_WORDS-1];
-  reg [2:0]          plru_array  [0:NUM_SETS-1];
-
-  // ------------------------------------------------------------------
-  // Lookup logic (only used when we start a new request)
-  integer w;
-  reg              lookup_hit;
-  reg [1:0]        lookup_way;
-  reg [31:0]       lookup_word;
-
-  wire [NUM_WAYS-1:0]    req_valid_vec;
-  wire [NUM_WAYS-1:0]    req_hit_vec;
-  wire [NUM_WAYS*32-1:0] req_data_flat;
-  genvar g_lookup;
-  generate
-    for (g_lookup = 0; g_lookup < NUM_WAYS; g_lookup = g_lookup + 1) begin : g_dcache_lookup_taps
-      localparam integer DATA_LSB = g_lookup * 32;
-      localparam integer DATA_MSB = DATA_LSB + 31;
-      assign req_valid_vec[g_lookup] = valid_array[g_lookup][req_index];
-      assign req_hit_vec[g_lookup]   = req_valid_vec[g_lookup] && (tag_array[g_lookup][req_index] == req_tag);
-      assign req_data_flat[DATA_MSB:DATA_LSB] = data_array[g_lookup][req_line_idx];
-    end
-  endgenerate
-
-  always @(*) begin
-    lookup_hit  = 1'b0;
-    lookup_way  = 2'd0;
-    lookup_word = req_data_flat[31:0];
-    for (w = 0; w < NUM_WAYS; w = w + 1) begin
-      if (req_hit_vec[w]) begin
-        lookup_hit  = 1'b1;
-        lookup_way  = w[1:0];
-        lookup_word = req_data_flat[w*32 +: 32];
+  // ---------------------------------------------------------------------------
+  // Helper utilities
+  // ---------------------------------------------------------------------------
+  function integer clog2;
+    input integer value;
+    integer r;
+    begin
+      r = 0;
+      value = value - 1;
+      while (value > 0) begin
+        value = value >> 1;
+        r = r + 1;
       end
+      clog2 = r;
+    end
+  endfunction
+
+  localparam integer ADDR_WIDTH      = XLEN;
+  localparam integer XLEN_BYTES      = XLEN/8;
+  localparam integer LINE_BITS       = LINE_BYTES * 8;
+  localparam integer SET_COUNT       = CACHE_BYTES / (LINE_BYTES * WAYS);
+  localparam integer OFF_BITS        = clog2(LINE_BYTES);
+  localparam integer IDX_BITS        = clog2(SET_COUNT);
+  localparam integer WORDS_PER_LINE  = LINE_BYTES / XLEN_BYTES;
+  localparam integer WORD_IDX_BITS   = (WORDS_PER_LINE <= 1) ? 1 : clog2(WORDS_PER_LINE);
+  localparam integer TAG_BITS        = ADDR_WIDTH - OFF_BITS - IDX_BITS;
+
+  initial begin
+    if (WAYS != 2) begin
+      $display("ERROR: dcache currently supports exactly 2 ways (WAYS=%0d).", WAYS);
+      $finish;
+    end
+    if ((CACHE_BYTES % (LINE_BYTES * WAYS)) != 0) begin
+      $display("ERROR: CACHE_BYTES must be divisible by LINE_BYTES*WAYS.");
+      $finish;
+    end
+    if ((LINE_BYTES & (LINE_BYTES - 1)) != 0) begin
+      $display("ERROR: LINE_BYTES must be power-of-two (got %0d).", LINE_BYTES);
+      $finish;
     end
   end
 
-  // ------------------------------------------------------------------
-  // Pseudo-LRU helpers
-  function [1:0] plru_pick;
-    input [2:0] state;
-    begin
-      if (state[2] == 1'b0) begin
-        plru_pick[1] = 1'b0;
-        plru_pick[0] = state[0];
-      end else begin
-        plru_pick[1] = 1'b1;
-        plru_pick[0] = state[1];
-      end
-    end
-  endfunction
+  // ---------------------------------------------------------------------------
+  // Cache arrays
+  // ---------------------------------------------------------------------------
+  reg [LINE_BITS-1:0] data_way0 [0:SET_COUNT-1];
+  reg [LINE_BITS-1:0] data_way1 [0:SET_COUNT-1];
+  reg [TAG_BITS-1:0]  tag_way0  [0:SET_COUNT-1];
+  reg [TAG_BITS-1:0]  tag_way1  [0:SET_COUNT-1];
+  reg                 valid_way0[0:SET_COUNT-1];
+  reg                 valid_way1[0:SET_COUNT-1];
+  reg                 dirty_way0[0:SET_COUNT-1];
+  reg                 dirty_way1[0:SET_COUNT-1];
+  reg                 mru_way   [0:SET_COUNT-1]; // 0 -> way0 MRU, 1 -> way1 MRU
 
-  function [2:0] plru_update;
-    input [2:0] state;
-    input [1:0] way;
-    reg [2:0] next;
-    begin
-      next = state;
-      if (way[1] == 1'b0) begin
-        next[2] = 1'b1;
-        next[0] = (way[0] == 1'b0) ? 1'b1 : 1'b0;
-      end else begin
-        next[2] = 1'b0;
-        next[1] = (way[0] == 1'b0) ? 1'b1 : 1'b0;
-      end
-      plru_update = next;
-    end
-  endfunction
+  // ---------------------------------------------------------------------------
+  // Request bookkeeping
+  // ---------------------------------------------------------------------------
+  reg                  req_rw_q;
+  reg [IDX_BITS-1:0]   req_idx_q;
+  reg [TAG_BITS-1:0]   req_tag_q;
+  reg [WORD_IDX_BITS-1:0] req_word_idx_q;
+  reg [XLEN-1:0]       req_wdata_q;
+  reg [XLEN_BYTES-1:0] req_wstrb_q;
 
-  // Helper to merge store data with byte strobes
-  function [31:0] apply_wstrb;
-    input [31:0] base;
-    input [31:0] wdata;
-    input [3:0]  wstrb;
-    reg [31:0] result;
-    begin
-      result = base;
-      if (wstrb[0]) result[7:0]   = wdata[7:0];
-      if (wstrb[1]) result[15:8]  = wdata[15:8];
-      if (wstrb[2]) result[23:16] = wdata[23:16];
-      if (wstrb[3]) result[31:24] = wdata[31:24];
-      apply_wstrb = result;
-    end
-  endfunction
+  reg                  victim_way_q;
+  reg [ADDR_WIDTH-1:0] victim_addr_q;
+  reg [LINE_BITS-1:0]  victim_line_q;
+  reg                  fill_way_q;
+  reg [ADDR_WIDTH-1:0] refill_addr_q;
 
-  // ------------------------------------------------------------------
-  // Victim selection (combinational)
-  integer vi;
-  reg [1:0] victim_way;
-  reg       found_invalid;
-  wire [2:0] req_plru_state = plru_array[req_index];
-  always @(*) begin
-    victim_way    = plru_pick(req_plru_state);
-    found_invalid = 1'b0;
-    for (vi = 0; vi < NUM_WAYS; vi = vi + 1) begin
-      if (!req_valid_vec[vi]) begin
-        victim_way    = vi[1:0];
-        found_invalid = 1'b1;
-      end
-    end
-  end
+  reg                  load_miss_active_q;
+  reg                  store_miss_active_q;
+  reg                  cpu_resp_valid_q;
+  reg                  cpu_resp_err_q;
+  reg [LINE_BITS-1:0]  fill_line_new;
 
-  // ------------------------------------------------------------------
-  // State machine
-  localparam S_IDLE      = 3'd0;
-  localparam S_RESP      = 3'd1;
-  localparam S_WRITEBACK = 3'd2;
-  localparam S_REFILL    = 3'd3;
+  // ---------------------------------------------------------------------------
+  // Derived signals for current indexed set
+  // ---------------------------------------------------------------------------
+  wire [LINE_BITS-1:0] line_way0 = data_way0[req_idx_q];
+  wire [LINE_BITS-1:0] line_way1 = data_way1[req_idx_q];
+  wire [TAG_BITS-1:0]  tag_way0_cur = tag_way0[req_idx_q];
+  wire [TAG_BITS-1:0]  tag_way1_cur = tag_way1[req_idx_q];
+  wire                 way0_valid = valid_way0[req_idx_q];
+  wire                 way1_valid = valid_way1[req_idx_q];
+  wire                 hit_way0   = way0_valid && (tag_way0_cur == req_tag_q);
+  wire                 hit_way1   = way1_valid && (tag_way1_cur == req_tag_q);
+  wire [XLEN-1:0]      load_word_way0 = line_get_word(line_way0, req_word_idx_q);
+  wire [XLEN-1:0]      load_word_way1 = line_get_word(line_way1, req_word_idx_q);
+  wire [XLEN-1:0]      load_word_sel  = hit_way0 ? load_word_way0 : load_word_way1;
+
+  wire victim_way_calc = (~way0_valid) ? 1'b0 :
+                         (~way1_valid) ? 1'b1 :
+                         ((mru_way[req_idx_q] == 1'b0) ? 1'b1 : 1'b0);
+  wire victim_valid_sel = (victim_way_calc == 1'b0) ? way0_valid : way1_valid;
+  wire victim_dirty_sel = (victim_way_calc == 1'b0) ? dirty_way0[req_idx_q] : dirty_way1[req_idx_q];
+  wire [TAG_BITS-1:0] victim_tag_sel = (victim_way_calc == 1'b0) ? tag_way0_cur : tag_way1_cur;
+  wire [LINE_BITS-1:0] victim_line_sel = (victim_way_calc == 1'b0) ? line_way0 : line_way1;
+  wire [ADDR_WIDTH-1:0] victim_addr_sel = {victim_tag_sel, req_idx_q, {OFF_BITS{1'b0}}};
+  wire [ADDR_WIDTH-1:0] req_line_addr   = {req_tag_q, req_idx_q, {OFF_BITS{1'b0}}};
+
+  // ---------------------------------------------------------------------------
+  // Output assignments
+  // ---------------------------------------------------------------------------
+  localparam [2:0] ST_IDLE        = 3'd0;
+  localparam [2:0] ST_LOOKUP      = 3'd1;
+  localparam [2:0] ST_WB_REQ      = 3'd2;
+  localparam [2:0] ST_REFILL_REQ  = 3'd3;
+  localparam [2:0] ST_REFILL_WAIT = 3'd4;
 
   reg [2:0] state_q;
 
-  // Latched request metadata
-  reg        pending_is_load_q;
-  reg [31:0] pending_addr_q;
-  reg [1:0]  pending_word_q;
-  reg [31:0] pending_store_data_q;
-  reg [3:0]  pending_store_strb_q;
-  reg [1:0]  pending_way_q;   // way selected for hit or victim
-  reg [INDEX_BITS-1:0] pending_index_q;
-  reg [TAG_BITS-1:0]   pending_tag_q;
-  reg [TAG_BITS-1:0]   victim_old_tag_q;
-  reg [31:0]           refill_store_word_q;
+  assign cpu_req_ready     = (state_q == ST_IDLE);
+  assign cpu_resp_valid    = cpu_resp_valid_q;
+  assign cpu_resp_err      = cpu_resp_err_q;
+  assign cpu_stall_ld_miss = load_miss_active_q;
+  assign cpu_stall_st_buf  = store_miss_active_q;
 
-  // Counters for write-back/fill
-  reg [1:0] wb_cnt_q;
-  reg [1:0] fill_cnt_q;
+  assign mem_req_valid = (state_q == ST_WB_REQ) || (state_q == ST_REFILL_REQ);
+  assign mem_req_write = (state_q == ST_WB_REQ);
+  assign mem_req_addr  = (state_q == ST_WB_REQ)    ? victim_addr_q :
+                         (state_q == ST_REFILL_REQ) ? refill_addr_q : {ADDR_WIDTH{1'b0}};
+  assign mem_req_wdata = (state_q == ST_WB_REQ) ? victim_line_q : {LINE_BITS{1'b0}};
+  assign mem_req_wstrb = (state_q == ST_WB_REQ) ? {LINE_BYTES{1'b1}} : {LINE_BYTES{1'b0}};
 
-  // Response registers
-  reg        core_ready_q;
-  reg        core_rvalid_q;
-  reg [31:0] core_rdata_q;
-
-  assign core_ready_o  = core_ready_q;
-  assign core_rvalid_o = core_rvalid_q;
-  assign core_rdata_o  = core_rdata_q;
-
-  // Backing memory control registers
-  reg        mem_req_q;
-  reg        mem_we_q;
-  reg [31:0] mem_addr_q;
-  reg [31:0] mem_wdata_q;
-  reg [3:0]  mem_wstrb_q;
-
-  assign mem_req_o   = mem_req_q;
-  assign mem_we_o    = mem_we_q;
-  assign mem_addr_o  = mem_addr_q;
-  assign mem_wdata_o = mem_wdata_q;
-  assign mem_wstrb_o = mem_wstrb_q;
-
-  // Helper
-  wire serve_request = (state_q == S_IDLE) && core_req_i;
-
-  integer set_i, way_i, word_i;
-
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      state_q              <= S_IDLE;
-      pending_is_load_q    <= 1'b0;
-      pending_addr_q       <= 32'h0;
-      pending_word_q       <= 2'd0;
-      pending_store_data_q <= 32'h0;
-      pending_store_strb_q <= 4'b0000;
-      pending_way_q        <= 2'd0;
-      pending_index_q      <= {INDEX_BITS{1'b0}};
-      pending_tag_q        <= {TAG_BITS{1'b0}};
-      victim_old_tag_q     <= {TAG_BITS{1'b0}};
-      refill_store_word_q  <= 32'h0;
-      wb_cnt_q             <= 2'd0;
-      fill_cnt_q           <= 2'd0;
-      core_ready_q         <= 1'b0;
-      core_rvalid_q        <= 1'b0;
-      core_rdata_q         <= 32'h0;
-      mem_req_q            <= 1'b0;
-      mem_we_q             <= 1'b0;
-      mem_addr_q           <= 32'h0;
-      mem_wdata_q          <= 32'h0;
-      mem_wstrb_q          <= 4'b0000;
-      for (set_i = 0; set_i < NUM_SETS; set_i = set_i + 1) begin
-        plru_array[set_i] <= 3'b000;
-        for (way_i = 0; way_i < NUM_WAYS; way_i = way_i + 1) begin
-          valid_array[way_i][set_i] <= 1'b0;
-          dirty_array[way_i][set_i] <= 1'b0;
-          tag_array[way_i][set_i]   <= {TAG_BITS{1'b0}};
-          for (word_i = 0; word_i < LINE_WORDS; word_i = word_i + 1) begin
-            data_array[way_i][(set_i << WORD_SEL_BITS) + word_i] <= 32'h0;
-          end
-        end
+  // ---------------------------------------------------------------------------
+  // State machine
+  // ---------------------------------------------------------------------------
+  integer i;
+  always @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      state_q            <= ST_IDLE;
+      req_rw_q           <= 1'b0;
+      req_idx_q          <= {IDX_BITS{1'b0}};
+      req_tag_q          <= {TAG_BITS{1'b0}};
+      req_word_idx_q     <= {WORD_IDX_BITS{1'b0}};
+      req_wdata_q        <= {XLEN{1'b0}};
+      req_wstrb_q        <= {XLEN_BYTES{1'b0}};
+      victim_way_q       <= 1'b0;
+      victim_addr_q      <= {ADDR_WIDTH{1'b0}};
+      victim_line_q      <= {LINE_BITS{1'b0}};
+      fill_way_q         <= 1'b0;
+      refill_addr_q      <= {ADDR_WIDTH{1'b0}};
+      load_miss_active_q <= 1'b0;
+      store_miss_active_q<= 1'b0;
+      cpu_resp_valid_q   <= 1'b0;
+      cpu_resp_err_q     <= 1'b0;
+      cpu_resp_rdata     <= {XLEN{1'b0}};
+      fill_line_new      <= {LINE_BITS{1'b0}};
+      for (i = 0; i < SET_COUNT; i = i + 1) begin
+        data_way0[i]  <= {LINE_BITS{1'b0}};
+        data_way1[i]  <= {LINE_BITS{1'b0}};
+        tag_way0[i]   <= {TAG_BITS{1'b0}};
+        tag_way1[i]   <= {TAG_BITS{1'b0}};
+        valid_way0[i] <= 1'b0;
+        valid_way1[i] <= 1'b0;
+        dirty_way0[i] <= 1'b0;
+        dirty_way1[i] <= 1'b0;
+        mru_way[i]    <= 1'b0;
       end
     end else begin
-      // Defaults each cycle
-      core_ready_q  <= 1'b0;
-      core_rvalid_q <= 1'b0;
-      mem_req_q     <= 1'b0;
-      mem_we_q      <= 1'b0;
-      mem_addr_q    <= 32'h0;
-      mem_wdata_q   <= 32'h0;
-      mem_wstrb_q   <= 4'b0000;
+      cpu_resp_valid_q <= 1'b0;
+      cpu_resp_err_q   <= 1'b0;
 
       case (state_q)
-        S_IDLE: begin
-          if (serve_request) begin
-            pending_is_load_q   <= ~core_we_i;
-            pending_addr_q      <= addr_aligned;
-            pending_word_q      <= req_word;
-            pending_index_q     <= req_index;
-            pending_tag_q       <= req_tag;
-            refill_store_word_q <= 32'h0;
-
-            if (core_we_i) begin
-              pending_store_data_q <= core_wdata_i;
-              pending_store_strb_q <= core_wstrb_i;
-            end
-
-            if (lookup_hit) begin
-              pending_way_q <= lookup_way;
-              plru_array[req_index] <= plru_update(plru_array[req_index], lookup_way);
-              if (core_we_i) begin
-                data_array[lookup_way][(req_index << WORD_SEL_BITS) + req_word] <= apply_wstrb(lookup_word, core_wdata_i, core_wstrb_i);
-                dirty_array[lookup_way][req_index] <= 1'b1;
-                state_q <= S_RESP;
-              end else begin
-                core_rdata_q <= lookup_word;
-                dirty_array[lookup_way][req_index] <= dirty_array[lookup_way][req_index];
-                state_q <= S_RESP;
-              end
-            end else begin
-              pending_way_q     <= victim_way;
-              victim_old_tag_q  <= tag_array[victim_way][req_index];
-              wb_cnt_q          <= 2'd0;
-              fill_cnt_q        <= 2'd0;
-              if (valid_array[victim_way][req_index] && dirty_array[victim_way][req_index]) begin
-                state_q <= S_WRITEBACK;
-              end else begin
-                state_q <= S_REFILL;
-              end
-            end
+        ST_IDLE: begin
+          if (cpu_req_valid) begin
+            req_rw_q       <= cpu_req_rw;
+            req_idx_q      <= cpu_req_addr[OFF_BITS + IDX_BITS - 1 : OFF_BITS];
+            req_tag_q      <= cpu_req_addr[ADDR_WIDTH-1 : OFF_BITS + IDX_BITS];
+            req_word_idx_q <= cpu_req_addr[OFF_BITS-1:2];
+            req_wdata_q    <= cpu_req_wdata;
+            req_wstrb_q    <= cpu_req_wstrb;
+            state_q        <= ST_LOOKUP;
           end
         end
 
-        S_RESP: begin
-          if (pending_is_load_q) begin
-            core_rvalid_q <= 1'b1;
+        ST_LOOKUP: begin
+          if (hit_way0 || hit_way1) begin
+            if (req_rw_q) begin
+              if (hit_way0) begin
+                data_way0[req_idx_q] <= line_merge_word(line_way0, req_word_idx_q, req_wdata_q, req_wstrb_q);
+                dirty_way0[req_idx_q] <= 1'b1;
+                mru_way[req_idx_q]    <= 1'b0;
+              end else begin
+                data_way1[req_idx_q] <= line_merge_word(line_way1, req_word_idx_q, req_wdata_q, req_wstrb_q);
+                dirty_way1[req_idx_q] <= 1'b1;
+                mru_way[req_idx_q]    <= 1'b1;
+              end
+              state_q <= ST_IDLE;
+            end else begin
+              cpu_resp_valid_q <= 1'b1;
+              cpu_resp_rdata   <= load_word_sel;
+              if (hit_way0)
+                mru_way[req_idx_q] <= 1'b0;
+              else
+                mru_way[req_idx_q] <= 1'b1;
+              state_q <= ST_IDLE;
+            end
           end else begin
-            core_ready_q  <= 1'b1;
+            victim_way_q        <= victim_way_calc;
+            victim_addr_q       <= victim_addr_sel;
+            victim_line_q       <= victim_line_sel;
+            fill_way_q          <= victim_way_calc;
+            refill_addr_q       <= req_line_addr;
+            load_miss_active_q  <= ~req_rw_q;
+            store_miss_active_q <=  req_rw_q;
+            if (victim_valid_sel && victim_dirty_sel)
+              state_q <= ST_WB_REQ;
+            else
+              state_q <= ST_REFILL_REQ;
           end
-          state_q <= S_IDLE;
         end
 
-        S_WRITEBACK: begin
-          mem_req_q   <= 1'b1;
-          mem_we_q    <= 1'b1;
-          mem_addr_q  <= {victim_old_tag_q, pending_index_q, 4'b0000} + {wb_cnt_q, 2'b00};
-          mem_wdata_q <= data_array[pending_way_q][(pending_index_q << WORD_SEL_BITS) + wb_cnt_q];
-          mem_wstrb_q <= 4'b1111;
+        ST_WB_REQ: begin
+          if (mem_req_ready) begin
+            if (victim_way_q == 1'b0)
+              dirty_way0[req_idx_q] <= 1'b0;
+            else
+              dirty_way1[req_idx_q] <= 1'b0;
+            state_q <= ST_REFILL_REQ;
+          end
+        end
 
-          if (mem_ready_i) begin
-            if (wb_cnt_q == LINE_WORDS - 1) begin
-              dirty_array[pending_way_q][pending_index_q] <= 1'b0;
-              state_q <= S_REFILL;
-              fill_cnt_q <= 2'd0;
+        ST_REFILL_REQ: begin
+          if (mem_req_ready)
+            state_q <= ST_REFILL_WAIT;
+        end
+
+        ST_REFILL_WAIT: begin
+          if (mem_resp_valid) begin
+            fill_line_new = mem_resp_rdata;
+            if (req_rw_q)
+              fill_line_new = line_merge_word(mem_resp_rdata, req_word_idx_q, req_wdata_q, req_wstrb_q);
+            else begin
+              cpu_resp_valid_q <= 1'b1;
+              cpu_resp_rdata   <= line_get_word(mem_resp_rdata, req_word_idx_q);
+              cpu_resp_err_q   <= mem_resp_err;
+            end
+            if (fill_way_q == 1'b0) begin
+              data_way0[req_idx_q]  <= fill_line_new;
+              tag_way0[req_idx_q]   <= req_tag_q;
+              valid_way0[req_idx_q] <= 1'b1;
+              dirty_way0[req_idx_q] <= req_rw_q;
+              mru_way[req_idx_q]    <= 1'b0;
             end else begin
-              wb_cnt_q <= wb_cnt_q + 1'b1;
+              data_way1[req_idx_q]  <= fill_line_new;
+              tag_way1[req_idx_q]   <= req_tag_q;
+              valid_way1[req_idx_q] <= 1'b1;
+              dirty_way1[req_idx_q] <= req_rw_q;
+              mru_way[req_idx_q]    <= 1'b1;
             end
+            load_miss_active_q  <= 1'b0;
+            store_miss_active_q <= 1'b0;
+            state_q <= ST_IDLE;
           end
         end
 
-        S_REFILL: begin
-          mem_req_q  <= 1'b1;
-          mem_we_q   <= 1'b0;
-          mem_addr_q <= {pending_tag_q, pending_index_q, 4'b0000} + {fill_cnt_q, 2'b00};
-
-          if (mem_rvalid_i) begin
-            data_array[pending_way_q][(pending_index_q << WORD_SEL_BITS) + fill_cnt_q] <= mem_rdata_i;
-            if (fill_cnt_q == pending_word_q) begin
-              core_rdata_q        <= mem_rdata_i;
-              refill_store_word_q <= mem_rdata_i;
-            end
-
-            if (fill_cnt_q == LINE_WORDS - 1) begin
-              valid_array[pending_way_q][pending_index_q] <= 1'b1;
-              tag_array[pending_way_q][pending_index_q]   <= pending_tag_q;
-              plru_array[pending_index_q]                 <= plru_update(plru_array[pending_index_q], pending_way_q);
-
-              if (pending_is_load_q) begin
-                dirty_array[pending_way_q][pending_index_q] <= 1'b0;
-                core_rvalid_q <= 1'b1;
-              end else begin
-                data_array[pending_way_q][(pending_index_q << WORD_SEL_BITS) + pending_word_q] <= apply_wstrb(refill_store_word_q, pending_store_data_q, pending_store_strb_q);
-                dirty_array[pending_way_q][pending_index_q] <= 1'b1;
-                core_ready_q <= 1'b1;
-              end
-
-              state_q <= S_IDLE;
-            end else begin
-              fill_cnt_q <= fill_cnt_q + 1'b1;
-            end
-          end
-        end
-
-        default: state_q <= S_IDLE;
+        default: state_q <= ST_IDLE;
       endcase
     end
   end
 
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+  function [XLEN-1:0] mask_word;
+    input [XLEN-1:0]       old_word;
+    input [XLEN-1:0]       new_word;
+    input [XLEN_BYTES-1:0] wstrb;
+    integer b;
+    integer byte_lsb;
+    reg [XLEN-1:0] result;
+    begin
+      result = old_word;
+      for (b = 0; b < XLEN_BYTES; b = b + 1) begin
+        if (wstrb[b]) begin
+          byte_lsb = b * 8;
+          result[byte_lsb +: 8] = new_word[byte_lsb +: 8];
+        end
+      end
+      mask_word = result;
+    end
+  endfunction
+
+  function [XLEN-1:0] line_get_word;
+    input [LINE_BITS-1:0] line_i;
+    input [WORD_IDX_BITS-1:0] idx_i;
+    integer base;
+    begin
+      base = idx_i * XLEN;
+      line_get_word = line_i[base +: XLEN];
+    end
+  endfunction
+
+  function [LINE_BITS-1:0] line_merge_word;
+    input [LINE_BITS-1:0] line_i;
+    input [WORD_IDX_BITS-1:0] idx_i;
+    input [XLEN-1:0] new_word_i;
+    input [XLEN_BYTES-1:0] wstrb_i;
+    integer base;
+    reg [LINE_BITS-1:0] tmp;
+    reg [XLEN-1:0]      old_word;
+    begin
+      tmp = line_i;
+      base = idx_i * XLEN;
+      old_word = line_i[base +: XLEN];
+      tmp[base +: XLEN] = mask_word(old_word, new_word_i, wstrb_i);
+      line_merge_word = tmp;
+    end
+  endfunction
+
 endmodule
+
+
