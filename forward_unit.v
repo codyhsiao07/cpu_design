@@ -4,7 +4,7 @@
 // - MEM stage result (EX/MEM) when the producer writes back this cycle or next
 //   * For ALU ops: use mem_alu_result
 //   * For JAL/JALR (PC+4): use mem_pc4
-//   * For LOADs: cannot forward from MEM stage in the immediately following cycle
+//   * For LOADs: forward once mem_load_valid_i indicates data availability
 // - WB stage writeback data (MEM/WB)
 // Priority: MEM-stage forward > WB-stage forward > original
 module forward_unit (
@@ -21,6 +21,8 @@ module forward_unit (
   input  [4:0]  mem_rd_i,
   input  [31:0] mem_alu_result_i,
   input  [31:0] mem_pc4_i,
+  input         mem_load_valid_i,
+  input  [31:0] mem_load_data_i,
 
   // WB stage producer (after MEM/WB mux)
   input         wb_we_i,
@@ -35,10 +37,17 @@ module forward_unit (
   // Determine candidate value from MEM stage
   // Only valid to forward when producer is valid, will write, rd!=0, and the
   // value is actually available in MEM stage this cycle (i.e., not a LOAD data yet).
-  wire mem_can_write   = mem_valid_i & mem_reg_write_i & (mem_rd_i != 5'd0);
+  wire mem_can_write_base = mem_valid_i & mem_reg_write_i & (mem_rd_i != 5'd0);
+  wire mem_can_write_load = mem_load_valid_i & mem_reg_write_i & (mem_rd_i != 5'd0);
+  wire mem_can_write   = mem_can_write_base | mem_can_write_load;
   wire mem_is_load     = (mem_wb_sel_i == 2'b01);
-  wire [31:0] mem_fwd_data = (mem_wb_sel_i == 2'b10) ? mem_pc4_i : mem_alu_result_i;
-  wire mem_can_forward = mem_can_write & ~mem_is_load; // cannot forward a load result from MEM stage
+  wire mem_can_forward_load = mem_is_load && mem_load_valid_i;
+  wire mem_can_forward_alu  = ~mem_is_load;
+  wire [31:0] mem_fwd_data =
+      mem_is_load ? mem_load_data_i :
+      (mem_wb_sel_i == 2'b10) ? mem_pc4_i :
+                                mem_alu_result_i;
+  wire mem_can_forward = mem_can_write & (mem_can_forward_load | mem_can_forward_alu);
 
   // Match checks
   wire match_mem_rs1 = mem_can_forward & (ex_rs1_idx_i == mem_rd_i) & (ex_rs1_idx_i != 5'd0);
@@ -57,4 +66,3 @@ module forward_unit (
                                         ex_rs2_val_i;
 
 endmodule
-

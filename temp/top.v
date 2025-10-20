@@ -238,6 +238,8 @@ module rv32i_core_top (
     .mem_rd_i         (mem_rd),
     .mem_alu_result_i (mem_alu_result),
     .mem_pc4_i        (mem_pc4),
+    .mem_load_valid_i (mem_load_valid),
+    .mem_load_data_i  (mem_load_rdata),
     .wb_we_i          (wb_rd_wen),
     .wb_rd_i          (wb_rd),
     .wb_wdata_i       (wb_wdata),
@@ -304,6 +306,8 @@ module rv32i_core_top (
   // ================= MEM =================
   wire [31:0] mem_load_rdata;
   wire        mem_stall;
+  wire        mem_load_valid;
+  wire        mem_load_active;
 
   // Core <-> D-cache wires
   wire        dcache_core_req;
@@ -314,6 +318,7 @@ module rv32i_core_top (
   wire        dcache_core_ready;
   wire        dcache_core_rvalid;
   wire [31:0] dcache_core_rdata;
+  wire        dcache_core_store_done;
 
   // D-cache <-> external memory wires
   wire        dcache_mem_req;
@@ -338,29 +343,37 @@ module rv32i_core_top (
     .dmem_ready_i      (dcache_core_ready),
     .dmem_rvalid_i     (dcache_core_rvalid),
     .dmem_rdata_i      (dcache_core_rdata),
+    .store_done_i      (dcache_core_store_done),
     .mem_load_rdata_o  (mem_load_rdata),
-    .mem_stall_o       (mem_stall)
+    .mem_stall_o       (mem_stall),
+    .mem_load_valid_o  (mem_load_valid),
+    .mem_load_active_o (mem_load_active)
   );
 
   dcache u_dcache (
-    .clk           (clk),
-    .rst_n         (rst_n),
-    .core_req_i    (dcache_core_req),
-    .core_we_i     (dcache_core_we),
-    .core_addr_i   (dcache_core_addr),
-    .core_wdata_i  (dcache_core_wdata),
-    .core_wstrb_i  (dcache_core_wstrb),
-    .core_ready_o  (dcache_core_ready),
-    .core_rvalid_o (dcache_core_rvalid),
-    .core_rdata_o  (dcache_core_rdata),
-    .mem_req_o     (dcache_mem_req),
-    .mem_we_o      (dcache_mem_we),
-    .mem_addr_o    (dcache_mem_addr),
-    .mem_wdata_o   (dcache_mem_wdata),
-    .mem_wstrb_o   (dcache_mem_wstrb),
-    .mem_ready_i   (dmem_ready_i),
-    .mem_rvalid_i  (dmem_rvalid_i),
-    .mem_rdata_i   (dmem_rdata_i)
+    .clk               (clk),
+    .rstn              (rst_n),
+    .cpu_req_valid     (dcache_core_req),
+    .cpu_req_ready     (dcache_core_ready),
+    .cpu_req_rw        (dcache_core_we),
+    .cpu_req_addr      (dcache_core_addr),
+    .cpu_req_wdata     (dcache_core_wdata),
+    .cpu_req_wstrb     (dcache_core_wstrb),
+    .cpu_resp_valid    (dcache_core_rvalid),
+    .cpu_resp_rdata    (dcache_core_rdata),
+    .cpu_resp_err      (),
+    .cpu_stall_ld_miss (),
+    .cpu_stall_st_buf  (),
+    .cpu_store_done_o  (dcache_core_store_done),
+    .mem_req_valid     (dcache_mem_req),
+    .mem_req_ready     (dmem_ready_i),
+    .mem_req_write     (dcache_mem_we),
+    .mem_req_addr      (dcache_mem_addr),
+    .mem_req_wdata     (dcache_mem_wdata),
+    .mem_req_wstrb     (dcache_mem_wstrb),
+    .mem_resp_valid    (dmem_rvalid_i),
+    .mem_resp_rdata    (dmem_rdata_i),
+    .mem_resp_err      ()
   );
 
   assign dmem_req_o   = dcache_mem_req;
@@ -376,7 +389,7 @@ module rv32i_core_top (
   // WB 提交單拍：
   // - LOAD：以 D-cache 的 rvalid 作為提交脈衝
   // - 非 LOAD：僅在 MEM 不停滯時提交，避免同一指令在 MEM 停滯期間重複提交
-  wire wb_i_valid = mem_mem_read ? dcache_core_rvalid : (mem_valid & ~mem_stall);
+  wire wb_i_valid = mem_mem_read ? mem_load_valid : (mem_valid & ~mem_stall);
 
   mem_wb u_mem_wb (
     .clk          (clk),

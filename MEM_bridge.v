@@ -38,7 +38,8 @@ module cache_bridge_mem
   output                     dmem_ready_i,
   output                     dmem_rvalid_i,
   output     [31:0]          dmem_rdata_i,
-  output                     dmem_err_i
+  output                     dmem_err_i,
+  output                     dmem_store_done_o
 );
 
   // Wires to top_cache_sram
@@ -46,6 +47,7 @@ module cache_bridge_mem
   wire [XLEN-1:0] d_req_addr, d_req_wdata, d_resp_rdata;
   wire [XLEN/8-1:0] d_req_wstrb;
   wire d_stall_ld_miss, d_stall_st_buf;
+  wire d_store_done;
 
   assign d_req_valid = dmem_req_o;
   assign d_req_rw    = dmem_we_o;
@@ -74,6 +76,7 @@ module cache_bridge_mem
   assign dmem_ready_i  = d_req_ready;
   assign dmem_rvalid_i = d_resp_valid;
   assign dmem_rdata_i  = d_resp_rdata;
+  assign dmem_store_done_o = d_store_done;
 
   // 只要是(1)底層回覆錯誤、(2)當拍越界、或(3)之前接收過越界但回覆未到，都算錯
   assign dmem_err_i    = d_resp_err | oor_now | oor_hold_q;
@@ -128,7 +131,8 @@ module cache_bridge_mem
     d_resp_rdata,
     d_resp_err,
     d_stall_ld_miss,
-    d_stall_st_buf
+    d_stall_st_buf,
+    d_store_done
   );
 
 endmodule

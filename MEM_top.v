@@ -32,9 +32,22 @@ module mem_cache_top
   input  [2:0]       mem_size_i,
   output [31:0]      mem_load_rdata_o,
   output             mem_stall_o,
+  output             mem_load_valid_o,
+  output             mem_load_active_o,
 
   // Latched memory access error
-  output             mem_access_err_o
+  output             mem_access_err_o,
+  // One-cycle error pulse (alignment or downstream response)
+  output             mem_err_event_o,
+
+  // Instruction fetch interface (optional when integrating with a core)
+  input              ifetch_valid_i,
+  input  [31:0]      ifetch_addr_i,
+  output [31:0]      ifetch_data_o,
+  output             ifetch_stall_o,
+
+  // Alignment fault detected before MEM stage issues a request
+  input              mem_align_err_i
 );
 
   // Wires between MEM and bridge
@@ -48,11 +61,20 @@ module mem_cache_top
   wire [31:0] dmem_rdata_i;
   wire        dmem_err_i;
 
+  // Suppress mem_stage request when an alignment fault is detected upstream
+  wire        align_err_active = mem_align_err_i & mem_valid_i;
+  wire        mem_stage_valid  = mem_valid_i & ~mem_align_err_i;
+  wire [31:0] mem_stage_rdata;
+  wire        mem_stage_stall;
+  wire        mem_stage_load_valid;
+  wire        mem_stage_load_active;
+  wire        store_done;
+
   // ------------------ mem_stage ------------------
   mem_stage u_mem (
     clk,
     rst_n,
-    mem_valid_i,
+    mem_stage_valid,
     mem_alu_result_i,
     mem_store_data_i,
     mem_mem_read_i,
@@ -66,8 +88,11 @@ module mem_cache_top
     dmem_ready_i,
     dmem_rvalid_i,
     dmem_rdata_i,
-    mem_load_rdata_o,
-    mem_stall_o
+    store_done,
+    mem_stage_rdata,
+    mem_stage_stall,
+    mem_stage_load_valid,
+    mem_stage_load_active
   );
 
   // ---------------- cache_bridge_mem ----------------
@@ -94,8 +119,8 @@ module mem_cache_top
   u_cb (
     clk,
     rst_n,
-    1'b0,               // fetch_valid_i
-    32'b0,              // fetch_addr_i
+    ifetch_valid_i,
+    ifetch_addr_i,
     ifetch_data,        // fetch_data_o (unused)
     ifetch_stall,       // fetch_stall_o (unused)
     dmem_req_o,
@@ -106,17 +131,38 @@ module mem_cache_top
     dmem_ready_i,
     dmem_rvalid_i,
     dmem_rdata_i,
-    dmem_err_i
+    dmem_err_i,
+    store_done
   );
 
   // Latch err alongside rvalid so TB can sample it safely
   reg err_q;
+  reg align_err_seen_q;
+  wire align_err_fire = align_err_active & ~align_err_seen_q;
+  wire mem_err_event  = align_err_fire |
+                        (dmem_rvalid_i & dmem_err_i) |
+                        (store_done & dmem_err_i);
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) align_err_seen_q <= 1'b0;
+    else if (!mem_valid_i) align_err_seen_q <= 1'b0;
+    else if (align_err_fire) align_err_seen_q <= 1'b1;
+  end
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) err_q <= 1'b0;
+    else if (align_err_fire) err_q <= 1'b1;
     else if (dmem_rvalid_i) err_q <= dmem_err_i;
-    else if (mem_valid_i && ~mem_mem_read_i && dmem_ready_i) err_q <= 1'b0; // clear after store
+    else if (mem_stage_valid && mem_mem_write_i && dmem_ready_i) err_q <= dmem_err_i;
   end
 
   assign mem_access_err_o = err_q;
+  assign mem_err_event_o  = mem_err_event;
+  assign mem_load_rdata_o = align_err_active ? 32'h0 : mem_stage_rdata;
+  assign mem_load_valid_o = align_err_active ? 1'b0 : mem_stage_load_valid;
+  assign mem_load_active_o = align_err_active ? 1'b0 : mem_stage_load_active;
+  assign mem_stall_o      = align_err_active ? 1'b1 : mem_stage_stall;
+  assign ifetch_data_o    = ifetch_data;
+  assign ifetch_stall_o   = ifetch_stall;
 
 endmodule

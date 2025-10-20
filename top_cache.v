@@ -44,7 +44,8 @@ module top_cache_sram #(
   output     [XLEN-1:0]      d_resp_rdata,
   output                     d_resp_err,
   output                     d_stall_ld_miss,
-  output                     d_stall_st_buf
+  output                     d_stall_st_buf,
+  output                     d_store_done
 );
 
   // -------------------------
@@ -149,6 +150,7 @@ module top_cache_sram #(
     .cpu_resp_err        (g_resp_err),
     .cpu_stall_ld_miss   (d_stall_ld_miss),
     .cpu_stall_st_buf    (d_stall_st_buf),
+    .cpu_store_done_o    (d_store_done),
 
     // Memory line interface (to SRAM)
     .mem_req_valid       (m_req_valid),

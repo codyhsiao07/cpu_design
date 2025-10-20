@@ -24,6 +24,7 @@ module dcache #(
   output                      cpu_resp_err,
   output                      cpu_stall_ld_miss,
   output                      cpu_stall_st_buf,
+  output                      cpu_store_done_o,
 
   // External memory line interface
   output                      mem_req_valid,
@@ -112,6 +113,7 @@ module dcache #(
   reg                  store_miss_active_q;
   reg                  cpu_resp_valid_q;
   reg                  cpu_resp_err_q;
+  reg                  cpu_store_done_q;
   reg [LINE_BITS-1:0]  fill_line_new;
 
   // ---------------------------------------------------------------------------
@@ -155,6 +157,7 @@ module dcache #(
   assign cpu_resp_err      = cpu_resp_err_q;
   assign cpu_stall_ld_miss = load_miss_active_q;
   assign cpu_stall_st_buf  = store_miss_active_q;
+  assign cpu_store_done_o  = cpu_store_done_q;
 
   assign mem_req_valid = (state_q == ST_WB_REQ) || (state_q == ST_REFILL_REQ);
   assign mem_req_write = (state_q == ST_WB_REQ);
@@ -185,6 +188,7 @@ module dcache #(
       store_miss_active_q<= 1'b0;
       cpu_resp_valid_q   <= 1'b0;
       cpu_resp_err_q     <= 1'b0;
+      cpu_store_done_q   <= 1'b0;
       cpu_resp_rdata     <= {XLEN{1'b0}};
       fill_line_new      <= {LINE_BITS{1'b0}};
       for (i = 0; i < SET_COUNT; i = i + 1) begin
@@ -201,6 +205,7 @@ module dcache #(
     end else begin
       cpu_resp_valid_q <= 1'b0;
       cpu_resp_err_q   <= 1'b0;
+      cpu_store_done_q <= 1'b0;
 
       case (state_q)
         ST_IDLE: begin
@@ -222,10 +227,12 @@ module dcache #(
                 data_way0[req_idx_q] <= line_merge_word(line_way0, req_word_idx_q, req_wdata_q, req_wstrb_q);
                 dirty_way0[req_idx_q] <= 1'b1;
                 mru_way[req_idx_q]    <= 1'b0;
+                cpu_store_done_q      <= 1'b1;
               end else begin
                 data_way1[req_idx_q] <= line_merge_word(line_way1, req_word_idx_q, req_wdata_q, req_wstrb_q);
                 dirty_way1[req_idx_q] <= 1'b1;
                 mru_way[req_idx_q]    <= 1'b1;
+                cpu_store_done_q      <= 1'b1;
               end
               state_q <= ST_IDLE;
             end else begin
@@ -292,6 +299,8 @@ module dcache #(
             end
             load_miss_active_q  <= 1'b0;
             store_miss_active_q <= 1'b0;
+            if (req_rw_q)
+              cpu_store_done_q <= 1'b1;
             state_q <= ST_IDLE;
           end
         end
@@ -351,5 +360,3 @@ module dcache #(
   endfunction
 
 endmodule
-
-

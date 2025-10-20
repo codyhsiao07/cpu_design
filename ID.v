@@ -273,18 +273,23 @@ module id_stage (
   // Immediate output
   assign imm_o = imm;
 
-  // Register file instance
+  // Register file instance with simple WB bypass (no forwarding network elsewhere)
+  wire [31:0] rs1_raw, rs2_raw;
   regfile u_rf (
     .clk   (clk),
     .rst_n (rst_n),
     .rs1_i (rs1),
     .rs2_i (rs2),
-    .rs1_o (rs1_val_o),
-    .rs2_o (rs2_val_o),
+    .rs1_o (rs1_raw),
+    .rs2_o (rs2_raw),
     .we_i  (wb_we_i),
     .rd_i  (wb_rd_i),
     .wd_i  (wb_wd_i)
   );
 
-endmodule
+  wire wb_match_rs1 = wb_we_i && (wb_rd_i != 5'd0) && (wb_rd_i == rs1);
+  wire wb_match_rs2 = wb_we_i && (wb_rd_i != 5'd0) && (wb_rd_i == rs2);
+  assign rs1_val_o = wb_match_rs1 ? wb_wd_i : rs1_raw;
+  assign rs2_val_o = wb_match_rs2 ? wb_wd_i : rs2_raw;
 
+endmodule

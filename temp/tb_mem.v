@@ -48,7 +48,12 @@ module tb_mem_full;
   reg  [2:0]       mem_size_i;
   wire [31:0]      mem_load_rdata_o;
   wire             mem_stall_o;
+  wire             mem_load_valid_dummy;
+  wire             mem_load_active_dummy;
   wire             mem_access_err_o;
+  wire             mem_err_event_dummy;
+  wire [31:0]      ifetch_data_dummy;
+  wire             ifetch_stall_dummy;
 
   // Positional instantiation (no dot)
   mem_cache_top
@@ -79,7 +84,15 @@ module tb_mem_full;
     mem_size_i,
     mem_load_rdata_o,
     mem_stall_o,
-    mem_access_err_o
+    mem_load_valid_dummy,
+    mem_load_active_dummy,
+    mem_access_err_o,
+    mem_err_event_dummy,
+    1'b0,
+    32'h0,
+    ifetch_data_dummy,
+    ifetch_stall_dummy,
+    1'b0
   );
 
   // -------- TB helpers --------

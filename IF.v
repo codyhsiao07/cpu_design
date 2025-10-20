@@ -12,7 +12,7 @@ module pc (
 );
 
   // Parameters: reset PC value
-  parameter RESET_PC = 32'h1000_0000;
+  parameter RESET_PC = 32'h0000_0000;
 
   reg [31:0] pc_q;   // Current PC
   reg [31:0] pc_d;   // Next PC
@@ -46,4 +46,3 @@ module pc (
   assign pc_o = pc_q;
 
 endmodule
-

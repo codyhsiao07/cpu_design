@@ -26,10 +26,13 @@ module mem_stage (
   // D$ / memory response side
   input              dmem_rvalid_i,
   input      [31:0]  dmem_rdata_i,
+  input              store_done_i,
 
   // Back to pipeline
   output     [31:0]  mem_load_rdata_o,
-  output             mem_stall_o
+  output             mem_stall_o,
+  output             mem_load_valid_o,
+  output             mem_load_active_o
 );
 
   // -------------------- txn latches --------------------
@@ -38,38 +41,121 @@ module mem_stage (
   reg [31:0] addr_q;           // byte address
   reg [31:0] wdata_q;          // store data (source from EX)
   reg [2:0]  size_f3_q;        // funct3 (signedness + size)
+  reg        done_q;           // remember txn completion until new instruction arrives
+  reg [31:0] load_data_q;      // latched load data
+  reg        load_active_q;    // active load awaiting response
+  reg        mem_read_q;       // latched mem_read flag for current txn
+  reg        req_pending_q;    // request waiting for downstream accept
 
-  wire new_req = mem_valid_i & (mem_mem_read_i | mem_mem_write_i) & ~busy_q;
+  wire mem_op_active = mem_mem_read_i | mem_mem_write_i;
+  wire new_req = mem_valid_i & mem_op_active & ~busy_q & ~done_q;
+  wire new_load_req = new_req & ~mem_mem_write_i; // pulse when accepting a load
+
+  wire [1:0] size2_q = size_f3_q[1:0];   // 00=byte,01=half,10=word
+  wire       sz_byte = (size2_q == 2'b00);
+  wire       sz_half = (size2_q == 2'b01);
+  wire       load_signed = (size_f3_q == 3'b000) | (size_f3_q == 3'b001); // LB,LH
+
+  reg [31:0] load_aligned;
+  always @* begin
+    if (sz_byte) begin
+      case (addr_q[1:0])
+        2'b00: load_aligned = {24'h0, dmem_rdata_i[7:0]};
+        2'b01: load_aligned = {24'h0, dmem_rdata_i[15:8]};
+        2'b10: load_aligned = {24'h0, dmem_rdata_i[23:16]};
+        default: load_aligned = {24'h0, dmem_rdata_i[31:24]};
+      endcase
+    end else if (sz_half) begin
+      load_aligned = addr_q[1] ? {16'h0, dmem_rdata_i[31:16]} : {16'h0, dmem_rdata_i[15:0]};
+    end else begin
+      load_aligned = dmem_rdata_i;
+    end
+  end
+
+  wire sign_bit = sz_byte ?
+                  ((addr_q[1:0]==2'b00) ? dmem_rdata_i[7]  :
+                   (addr_q[1:0]==2'b01) ? dmem_rdata_i[15] :
+                   (addr_q[1:0]==2'b10) ? dmem_rdata_i[23] : dmem_rdata_i[31]) :
+                  (sz_half ? (addr_q[1] ? dmem_rdata_i[31] : dmem_rdata_i[15]) :
+                             dmem_rdata_i[31]);
+  wire [31:0] load_result =
+      load_signed ?
+        (sz_byte ? {{24{sign_bit}}, load_aligned[7:0]} :
+         sz_half ? {{16{sign_bit}}, load_aligned[15:0]} :
+                   load_aligned) :
+        load_aligned;
+
+  wire same_mem_inputs =
+      (mem_mem_write_i == we_q) &&
+      (mem_mem_read_i  == mem_read_q) &&
+      (mem_alu_result_i == addr_q) &&
+      ((we_q ? (mem_store_data_i == wdata_q) : 1'b1)) &&
+      (mem_size_i == size_f3_q);
+
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      busy_q    <= 1'b0;
-      we_q      <= 1'b0;
-      addr_q    <= 32'h0;
-      wdata_q   <= 32'h0;
-      size_f3_q <= 3'b010; // default LW
+      busy_q         <= 1'b0;
+      we_q           <= 1'b0;
+      addr_q         <= 32'h0;
+      wdata_q        <= 32'h0;
+      size_f3_q      <= 3'b010; // default LW
+      done_q         <= 1'b0;
+      load_data_q    <= 32'h0;
+      load_active_q  <= 1'b0;
+      mem_read_q     <= 1'b0;
+      req_pending_q  <= 1'b0;
     end else begin
-      // complete current
+      // Complete current transaction
       if (busy_q) begin
         if (we_q) begin
-          if (dmem_ready_i) busy_q <= 1'b0;      // store done on ready
+          if (store_done_i) begin
+            busy_q         <= 1'b0;
+            done_q         <= 1'b1;
+          end
         end else begin
-          if (dmem_rvalid_i) busy_q <= 1'b0;     // load  done on rvalid
+          if (dmem_rvalid_i) begin
+            busy_q        <= 1'b0;
+            done_q        <= 1'b1;
+            load_data_q   <= load_result;
+            load_active_q <= 1'b0;
+          end
         end
       end
-      // start new
+
+      // Start new transaction when allowed
       if (new_req) begin
         busy_q    <= 1'b1;
         we_q      <= mem_mem_write_i;
         addr_q    <= mem_alu_result_i;
         wdata_q   <= mem_store_data_i;
         size_f3_q <= mem_size_i;
+        mem_read_q<= mem_mem_read_i;
+        done_q    <= 1'b0;
+        load_active_q  <= ~mem_mem_write_i;
+      end else if (~busy_q) begin
+        if (~mem_valid_i || ~mem_op_active || ~same_mem_inputs) begin
+          done_q <= 1'b0;
+        end
+      end
+    end
+  end
+
+  // Track whether the latched request still needs to hand-shake with downstream
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      req_pending_q <= 1'b0;
+    end else begin
+      if (req_pending_q && dmem_ready_i) begin
+        req_pending_q <= 1'b0;
+      end else if (new_req) begin
+        req_pending_q <= 1'b1;
       end
     end
   end
 
   // -------------------- request outputs --------------------
-  assign dmem_req_o  = busy_q;       // level-valid during txn
+  assign dmem_req_o  = req_pending_q;
   assign dmem_we_o   = we_q;
   assign dmem_addr_o = addr_q;       // byte address (downstream word-aligns)
 
@@ -118,42 +204,13 @@ module mem_stage (
   assign dmem_wdata_o = align_store_data(wdata_q, size_f3_q, addr_q[1:0]);
 
   // -------------------- load data align/extend --------------------
-  wire [1:0] size2_q = size_f3_q[1:0];   // 00=byte,01=half,10=word
-  wire       sz_byte = (size2_q == 2'b00);
-  wire       sz_half = (size2_q == 2'b01);
-  wire       load_signed = (size_f3_q == 3'b000) | (size_f3_q == 3'b001); // LB,LH
+  wire load_resp_fire = (~we_q) & busy_q & dmem_rvalid_i;
 
-  reg [31:0] load_aligned;
-  always @* begin
-    if (sz_byte) begin
-      case (addr_q[1:0])
-        2'b00: load_aligned = {24'h0, dmem_rdata_i[7:0]};
-        2'b01: load_aligned = {24'h0, dmem_rdata_i[15:8]};
-        2'b10: load_aligned = {24'h0, dmem_rdata_i[23:16]};
-        default: load_aligned = {24'h0, dmem_rdata_i[31:24]};
-      endcase
-    end else if (sz_half) begin
-      load_aligned = addr_q[1] ? {16'h0, dmem_rdata_i[31:16]} : {16'h0, dmem_rdata_i[15:0]};
-    end else begin
-      load_aligned = dmem_rdata_i;
-    end
-  end
-
-  wire sign_bit = sz_byte ?
-                  ((addr_q[1:0]==2'b00) ? dmem_rdata_i[7]  :
-                   (addr_q[1:0]==2'b01) ? dmem_rdata_i[15] :
-                   (addr_q[1:0]==2'b10) ? dmem_rdata_i[23] : dmem_rdata_i[31]) :
-                  (sz_half ? (addr_q[1] ? dmem_rdata_i[31] : dmem_rdata_i[15]) :
-                             dmem_rdata_i[31]);
-
-  assign mem_load_rdata_o =
-      load_signed ?
-        (sz_byte ? {{24{sign_bit}}, load_aligned[7:0]} :
-         sz_half ? {{16{sign_bit}}, load_aligned[15:0]} :
-                   load_aligned) :
-        load_aligned;
+  assign mem_load_rdata_o  = load_resp_fire ? load_result : load_data_q;
+  assign mem_load_valid_o  = load_resp_fire;
+  assign mem_load_active_o = load_active_q | new_load_req | load_resp_fire;
 
   // -------------------- stall --------------------
-  assign mem_stall_o = busy_q;
+  assign mem_stall_o = busy_q | new_req;
 
 endmodule
