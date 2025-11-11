@@ -53,3 +53,33 @@ This repository contains a five-stage RV32I processor core plus an integrated in
 - `.gitattributes` sets text normalization for the repository.
 - Many modules rely on positional port connections to satisfy toolchain restrictions; keep the ordering in sync when reusing blocks.
 - When swapping between SRAM models, ensure the base address matches the program image you load into simulation.
+
+## Recent Changes (Pipeline Visibility, Load Hazard Control, Testbench Expansion)
+
+This update focuses on:
+1) Improved visibility across the EX→MEM→WB pipeline path
+2) Robust load-dependent hazard and MEM backpressure handling
+3) A fully scriptable, macro-driven top-level test suite
+
+### Pipeline Registers
+- **EXMEM_register.v (100–113)** — Added `ifndef SYNTHESIS` event logs and stall/flush assertions.
+- **IDEX_register.v (189–198)** — Added a trace when instructions advance from ID into EX without stall/flush.
+- **MEMWB_register.v (63–71)** — Clarified the single-cycle `i_valid` contract and simplified `rd_wen` latching.
+
+### MEM Stage and Hazard Unit
+- **MEM.v (51–60, 162–239)** — Reworked duplicate-request suppression, introduced `done_block`, and added detailed sim prints.
+- **hazard_unit.v (30–123)** — Added `mem_load_active_i` and `pending_load_mask_i`, now stalling on outstanding loads.
+- **rv32i_core_mem_top.v (193–500)** — Implemented 4-entry pending-load tracking and synchronized mem_err_event recovery.
+- **temp/top.v (430–468)** — Mirrored pending-load mask logic in the simpler core build.
+- **top_cache.v (77–188)** — Added guard-aware completion/error pulses.
+- **mem_guard.v (3–45)** — Added `P_SRAM_BASE` param and clarified region enforcement logic.
+
+### Testbench
+- **final_top_tb.v (1–149)** — Rebuilt testbench harness: plusargs, realtime clock, progress logging, PASS/FAIL handlers.
+- **sram_test_final.v (90–514)** — Replaced inline program with macro-configurable multi-scenario test suite.
+
+### File Moves
+- Removed: `sram_2mb.v`
+- Added: `need/sram_2mb.v`, `tmp.txt` (staged for cleanup/replacement)
+- `MEM_bridge.v` flagged but unchanged except for line endings.
+
