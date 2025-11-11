@@ -26,7 +26,9 @@ module hazard_unit (
   input        mem_valid_i,
   input  [4:0] mem_rd_i,
   input        mem_reg_write_i,
-  input        mem_stall_i,    // memory/back-end is busy
+  input        mem_stall_i,       // memory/back-end is busy
+  input        mem_load_active_i, // pending load awaiting data
+  input  [31:0] pending_load_mask_i,
 
   // ===== IF structural stall (I-cache miss) =====
   input        ifetch_stall_i,
@@ -74,6 +76,15 @@ module hazard_unit (
       (mem_valid_i & mem_reg_write_i & raw_mem_rs2)
     );
 
+  // MEM-stage load still pending (data not ready for forwarding)
+  wire mem_pending_load_hazard = raw_mem && mem_load_active_i;
+
+  // Outstanding load scoreboard (load left EX but has not returned data yet)
+  wire pending_load_rs1 = id_use_rs1 && pending_load_mask_i[id_rs1_i];
+  wire pending_load_rs2 = id_use_rs2 && pending_load_mask_i[id_rs2_i];
+  wire pending_load_hazard = pending_load_rs1 | pending_load_rs2;
+  wire pending_load_any = |pending_load_mask_i;
+
   // ---------- Stall logic ----------
   // - Always propagate memory backpressure upstream.
   // - Data hazards:
@@ -82,7 +93,9 @@ module hazard_unit (
   //   * store-data: same as above, and will also bubble ID/EX (see flush)
   // With forwarding enabled, do not stall on generic RAW; only load-use and
   // store-data hazards require bubbles/stalls.
-  wire stall_for_data = load_use_hazard | store_data_hazard;
+  wire stall_for_data = load_use_hazard | store_data_hazard |
+                        mem_pending_load_hazard | pending_load_hazard |
+                        pending_load_any;
 
   // Separate structural stalls for front/back of pipe
   wire structural_stall_front = ifetch_stall_i | mem_stall_i; // IF/ID
@@ -101,5 +114,14 @@ module hazard_unit (
   // - store-data: flush ID/EX to insert a bubble (ensure correct rs2 store data)
   assign flush_ifid_o = redirect_valid_i;
   assign flush_idex_o = redirect_valid_i | load_use_hazard | store_data_hazard;
+
+`ifndef SYNTHESIS
+  always @(*) begin
+    if (pending_load_hazard) begin
+      $display("[%0t] HAZARD pending load hit rs1=%0d rs2=%0d mask=0x%08x",
+               $time, id_rs1_i, id_rs2_i, pending_load_mask_i);
+    end
+  end
+`endif
 
 endmodule

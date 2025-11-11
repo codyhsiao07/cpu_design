@@ -430,6 +430,20 @@ module rv32i_core_top (
   assign wb_rd_o    = rf_waddr;
   assign wb_wdata_o = rf_wdata;
 
+  // Track outstanding loads (bitmask)
+  reg [31:0] pending_load_mask;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      pending_load_mask <= 32'b0;
+    end else begin
+      pending_load_mask <= pending_load_mask;
+      if (mem_load_valid && (mem_rd != 5'd0))
+        pending_load_mask[mem_rd] <= 1'b0;
+      if (ex_valid && ex_mem_read && (ex_rd != 5'd0))
+        pending_load_mask[ex_rd] <= 1'b1;
+    end
+  end
+
   // ================= Hazard/Control =================
   hazard_unit u_hdu (
     // ID
@@ -447,6 +461,8 @@ module rv32i_core_top (
     .mem_rd_i          (mem_rd),
     .mem_reg_write_i   (mem_reg_write),
     .mem_stall_i       (mem_stall),
+    .mem_load_active_i (mem_load_active),
+    .pending_load_mask_i(pending_load_mask),
     .ifetch_stall_i   (icache_stall),
     // Redirect
     .redirect_valid_i  (redirect_valid),

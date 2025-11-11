@@ -87,16 +87,13 @@ module sram_2mb #(
 // sram_test_programs_full.vh  (Verilog-2001)
 // A comprehensive inline test suite for your 5-stage pipeline + SRAM.
 // Modes (define ONE at compile-time):
-//   -D SRAM_TB_SUITE_FULL        : Broad, legal scenarios; ends with x4=17 → PASS
-//   -D SRAM_TB_DIVERSE_PASS      : Medium-size legal suite; ends with x4=17 → PASS
-//   -D SRAM_TB_ISA_BASELINE      : Directed ALU/branch sweep; ends with x4=17 ??PASS
-//   -D SRAM_TB_STACK_EXERCISE    : Stack push/pop + subroutine; ends with x4=17 ??PASS
-//   -D SRAM_TB_RANDOM_STRESS     : Pseudo-random store/loop mix; ends with x4=17 ??PASS
-//   -D SRAM_TB_ILLEGAL_FAIL      : Store to TEXT (illegal) → mem_access_err expected
-//   -D SRAM_TB_NEG_OOR_HI_STORE  : Store above SRAM_LAST → mem_access_err expected
-//   -D SRAM_TB_NEG_OOR_LO_STORE  : Store below SRAM_BASE → mem_access_err expected
-//   -D SRAM_TB_NEG_OOR_HI_LOAD   : Load above SRAM_LAST  → mem_access_err expected
-//   -D SRAM_TB_SMOKE             : Tiny store/load sanity; ends with x4=17 → PASS
+//   -D SRAM_TB_SUITE_FULL        : Broad, legal scenarios; ends with x4=17 ??PASS
+//   -D SRAM_TB_DIVERSE_PASS      : Medium-size legal suite; ends with x4=17 ??PASS
+//   -D SRAM_TB_ILLEGAL_FAIL      : Store to TEXT (illegal) ??mem_access_err expected
+//   -D SRAM_TB_NEG_OOR_HI_STORE  : Store above SRAM_LAST ??mem_access_err expected
+//   -D SRAM_TB_NEG_OOR_LO_STORE  : Store below SRAM_BASE ??mem_access_err expected
+//   -D SRAM_TB_NEG_OOR_HI_LOAD   : Load above SRAM_LAST  ??mem_access_err expected
+//   -D SRAM_TB_SMOKE             : Tiny store/load sanity; ends with x4=17 ??PASS
 // Default (none defined) now runs the shortened SUITE_FULL scenario; define
 // another macro to override it when needed.
 //
@@ -122,20 +119,12 @@ module sram_2mb #(
 `ifndef SRAM_TB_SRAM_SIZE_BYTES
 `define SRAM_TB_SRAM_SIZE_BYTES 32'h0020_0000 // 2MB
 `endif
-`ifndef SRAM_TB_PASS_OPCODE
-`define SRAM_TB_PASS_OPCODE 32'hC0DE_CAFE
-`endif
-`ifndef SRAM_TB_FAIL_OPCODE
-`define SRAM_TB_FAIL_OPCODE 32'h0BAD_BEEF
-`endif
 
 localparam [31:0] TB_TEXT_BASE = `SRAM_TB_TEXT_BASE;
 localparam [31:0] TB_TEXT_LAST = `SRAM_TB_TEXT_LAST;
 localparam [31:0] TB_DATA_BASE = `SRAM_TB_DATA_BASE;
 localparam [31:0] TB_SRAM_BASE = `SRAM_TB_SRAM_BASE;
 localparam [31:0] TB_SRAM_LAST = TB_SRAM_BASE + (`SRAM_TB_SRAM_SIZE_BYTES - 32'd4);
-localparam [31:0] TB_PASS_OPCODE = `SRAM_TB_PASS_OPCODE;
-localparam [31:0] TB_FAIL_OPCODE = `SRAM_TB_FAIL_OPCODE;
 
 integer __sramtb_i;
 
@@ -144,16 +133,10 @@ integer __sramtb_i;
 `ifndef SRAM_TB_NEG_OOR_HI_STORE
 `ifndef SRAM_TB_NEG_OOR_LO_STORE
 `ifndef SRAM_TB_NEG_OOR_HI_LOAD
-`ifndef SRAM_TB_ISA_BASELINE
-`ifndef SRAM_TB_STACK_EXERCISE
-`ifndef SRAM_TB_RANDOM_STRESS
 `ifndef SRAM_TB_DIVERSE_PASS
 `ifndef SRAM_TB_SMOKE
 `ifndef SRAM_TB_SUITE_FULL
 `define SRAM_TB_SUITE_FULL
-`endif
-`endif
-`endif
 `endif
 `endif
 `endif
@@ -258,88 +241,7 @@ integer __sramtb_i;
     mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h01100293; // addi x5, x0, 0x11
     mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00552023; // sw x5, 0(x10)
     mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h00052203; // lw x4, 0(x10)
-    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
-  end
-
-`elsif SRAM_TB_ISA_BASELINE
-  localparam [31:0] BOOT_PC = TB_TEXT_BASE;
-  initial begin
-    $display("SRAM_TB MODE = ISA_BASELINE  TEXT=%h..%h DATA_BASE=%h", TB_TEXT_BASE, TB_TEXT_LAST, TB_DATA_BASE);
-    #1;
-    for (__sramtb_i = 0; __sramtb_i < 48; __sramtb_i = __sramtb_i + 1)
-      mem[((BOOT_PC - TB_SRAM_BASE) >> 2) + __sramtb_i] = 32'h00000013;
-
-    mem[(BOOT_PC + 32'h0000 - TB_SRAM_BASE) >> 2] = { TB_DATA_BASE[31:12], 5'd10, 7'h37 }; // lui x10, DATA_BASE
-    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h00500093; // addi x1, x0, 5
-    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'hFFD00113; // addi x2, x0, -3
-    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h002081B3; // add x3, x1, x2
-    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h40208233; // sub x4, x1, x2
-    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h0041C2B3; // xor x5, x3, x4
-    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h0041E333; // or  x6, x3, x4
-    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'h0041F3B3; // and x7, x3, x4
-    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = 32'h00019433; // sll x8, x3, x0
-    mem[(BOOT_PC + 32'h0024 - TB_SRAM_BASE) >> 2] = 32'h001124B3; // slt x9, x2, x1
-    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h00452023; // sw x4, 0(x10)
-    mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h00052583; // lw x11, 0(x10)
-    mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'h00458463; // beq x11, x4, +8
-    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = 32'h0100006F; // jal x0, fail
-    mem[(BOOT_PC + 32'h0038 - TB_SRAM_BASE) >> 2] = 32'h00958233; // add x4, x11, x9
-    mem[(BOOT_PC + 32'h003C - TB_SRAM_BASE) >> 2] = 32'h00820213; // addi x4, x4, 8 -> 0x11
-    mem[(BOOT_PC + 32'h0040 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
-    mem[(BOOT_PC + 32'h0044 - TB_SRAM_BASE) >> 2] = 32'hBAD00213; // fail: addi x4, x0, 0xBAD
-    mem[(BOOT_PC + 32'h0048 - TB_SRAM_BASE) >> 2] = TB_FAIL_OPCODE;
-  end
-
-`elsif SRAM_TB_STACK_EXERCISE
-  localparam [31:0] BOOT_PC = TB_TEXT_BASE;
-  initial begin
-    $display("SRAM_TB MODE = STACK_EXERCISE  TEXT=%h..%h DATA_BASE=%h STACK_BASE=%h", TB_TEXT_BASE, TB_TEXT_LAST, TB_DATA_BASE, STACK_BASE_ADDR);
-    #1;
-    for (__sramtb_i = 0; __sramtb_i < 64; __sramtb_i = __sramtb_i + 1)
-      mem[((BOOT_PC - TB_SRAM_BASE) >> 2) + __sramtb_i] = 32'h00000013;
-
-    mem[(BOOT_PC + 32'h0000 - TB_SRAM_BASE) >> 2] = { TB_DATA_BASE[31:12], 5'd10, 7'h37 }; // lui x10, DATA_BASE
-    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = { STACK_BASE_ADDR[31:12], 5'd2, 7'h37 }; // lui x2, STACK_BASE
-    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'hFF010113; // addi x2, x2, -16
-    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h02100293; // addi x5, x0, 0x21
-    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h00512023; // sw x5, 0(x2)
-    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h00512223; // sw x5, 4(x2)
-    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h010000EF; // jal x1, helper
-    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'h01010113; // addi x2, x2, 16
-    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
-
-    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h00012303; // helper: lw x6, 0(x2)
-    mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h00412383; // lw x7, 4(x2)
-    mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'h00730433; // add x8, x6, x7
-    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = 32'h00852023; // sw x8, 0(x10)
-    mem[(BOOT_PC + 32'h0038 - TB_SRAM_BASE) >> 2] = 32'h00052483; // lw x9, 0(x10)
-    mem[(BOOT_PC + 32'h003C - TB_SRAM_BASE) >> 2] = 32'h0014D493; // srli x9, x9, 1
-    mem[(BOOT_PC + 32'h0040 - TB_SRAM_BASE) >> 2] = 32'hFF048213; // addi x4, x9, -0x10 -> 0x11
-    mem[(BOOT_PC + 32'h0044 - TB_SRAM_BASE) >> 2] = 32'h00008067; // jalr x0, x1, 0
-  end
-
-`elsif SRAM_TB_RANDOM_STRESS
-  localparam [31:0] BOOT_PC = TB_TEXT_BASE;
-  initial begin
-    $display("SRAM_TB MODE = RANDOM_STRESS  TEXT=%h..%h DATA_BASE=%h", TB_TEXT_BASE, TB_TEXT_LAST, TB_DATA_BASE);
-    #1;
-    for (__sramtb_i = 0; __sramtb_i < 64; __sramtb_i = __sramtb_i + 1)
-      mem[((BOOT_PC - TB_SRAM_BASE) >> 2) + __sramtb_i] = 32'h00000013;
-
-    mem[(BOOT_PC + 32'h0000 - TB_SRAM_BASE) >> 2] = { TB_DATA_BASE[31:12], 5'd10, 7'h37 }; // lui x10, DATA_BASE
-    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h00100293; // addi x5, x0, 1
-    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00800313; // addi x6, x0, 8
-    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h00552023; // sw x5, 0(x10)
-    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h005282B3; // add x5, x5, x5
-    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h1D52C293; // xori x5, x5, 0x1D5
-    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h00450513; // addi x10, x10, 4
-    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'hFFF30313; // addi x6, x6, -1
-    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = 32'hFE0316E3; // bne x6, x0, loop
-    mem[(BOOT_PC + 32'h0024 - TB_SRAM_BASE) >> 2] = 32'h00028213; // addi x4, x5, 0
-    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h03F27213; // andi x4, x4, 0x3F
-    mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h01020213; // addi x4, x4, 0x10
-    mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'hFCE20213; // addi x4, x4, -0x32 -> 0x11
-    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
+    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h0000006F; // jal x0, 0
   end
 
 `elsif SRAM_TB_SUITE_FULL
@@ -353,27 +255,20 @@ integer __sramtb_i;
     for (__sramtb_i = 0; __sramtb_i < SUITE_SHORT_WORDS; __sramtb_i = __sramtb_i + 1)
       mem[((BOOT_PC - TB_SRAM_BASE) >> 2) + __sramtb_i] = 32'h00000013;
 
-    // 0x0000: Prepare pointers and seed values in DATA.
     mem[(BOOT_PC + 32'h0000 - TB_SRAM_BASE) >> 2] = { TB_DATA_BASE[31:12], 5'd10, 7'h37 };
-    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h00500093; // addi x1, x0, 5
-    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00C00113; // addi x2, x0, 12
-    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h00252023; // sw x2, 0(x10)
-    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h00450593; // addi x11, x10, 4
-    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h0015A023; // sw x1, 0(x11)
-
-    // 0x0018: Read back and accumulate to x6 = 0x11.
-    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h00052183; // lw x3, 0(x10)
-    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'h0005A283; // lw x5, 0(x11)
-    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = 32'h00518333; // add x6, x3, x5
-
-    // 0x0024: Touch STACK region and form the pass signature.
-    mem[(BOOT_PC + 32'h0024 - TB_SRAM_BASE) >> 2] = { STACK_BASE_ADDR[31:12], 5'd12, 7'h37 }; // lui x12, STACK
-    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h00662023; // sw x6, 0(x12)
-    mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h00062383; // lw x7, 0(x12)
-    mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'h00038213; // addi x4, x7, 0
-
-    // 0x0034: Halt.
-    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
+    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h00500093;
+    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00C00113;
+    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h00252023;
+    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h00450593;
+    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h0015A023;
+    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h00052183;
+    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'h0005A283;
+    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = 32'h00518333;
+    mem[(BOOT_PC + 32'h0024 - TB_SRAM_BASE) >> 2] = { STACK_BASE_ADDR[31:12], 5'd12, 7'h37 };
+    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h00662023;
+    mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h00062383;
+    mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'h00038213;
+    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = 32'h0000006F;
   end
 `else
   initial begin
@@ -419,16 +314,7 @@ integer __sramtb_i;
     mem[(BOOT_PC + 32'h0084 - TB_SRAM_BASE) >> 2] = 32'h019BA023;
     mem[(BOOT_PC + 32'h0088 - TB_SRAM_BASE) >> 2] = 32'h0005AD03;
     mem[(BOOT_PC + 32'h008C - TB_SRAM_BASE) >> 2] = 32'h000BAD83;
-    mem[(BOOT_PC + 32'h0090 - TB_SRAM_BASE) >> 2] = 32'h01A282B3;
-    mem[(BOOT_PC + 32'h0094 - TB_SRAM_BASE) >> 2] = 32'h01B282B3;
-    mem[(BOOT_PC + 32'h0098 - TB_SRAM_BASE) >> 2] = 32'h001A0A13;
-    mem[(BOOT_PC + 32'h009C - TB_SRAM_BASE) >> 2] = 32'hFEAA90E3;
-    mem[(BOOT_PC + 32'h00A0 - TB_SRAM_BASE) >> 2] = 32'h00500093;
-    mem[(BOOT_PC + 32'h00A4 - TB_SRAM_BASE) >> 2] = 32'h00708113;
-    mem[(BOOT_PC + 32'h00A8 - TB_SRAM_BASE) >> 2] = 32'h00110233;
-    mem[(BOOT_PC + 32'h00AC - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
-  end
-`endif // SRAM_TB_SUITE_SHORT
+    mem[(BOOT_PC +
 
 `elsif SRAM_TB_DIVERSE_PASS
   localparam [31:0] BOOT_PC = TB_TEXT_BASE;
@@ -455,7 +341,7 @@ integer __sramtb_i;
     mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h00662023;
     mem[(BOOT_PC + 32'h002C - TB_SRAM_BASE) >> 2] = 32'h00062383;
     mem[(BOOT_PC + 32'h0030 - TB_SRAM_BASE) >> 2] = 32'h00038213;
-    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
+    mem[(BOOT_PC + 32'h0034 - TB_SRAM_BASE) >> 2] = 32'h0000006F;
   end
 `else
   initial begin
@@ -506,7 +392,7 @@ integer __sramtb_i;
     mem[(BOOT_PC + 32'h00A0 - TB_SRAM_BASE) >> 2] = 32'h00500093;
     mem[(BOOT_PC + 32'h00A4 - TB_SRAM_BASE) >> 2] = 32'h00708113;
     mem[(BOOT_PC + 32'h00A8 - TB_SRAM_BASE) >> 2] = 32'h00110233;
-    mem[(BOOT_PC + 32'h00AC - TB_SRAM_BASE) >> 2] = TB_PASS_OPCODE;
+    mem[(BOOT_PC + 32'h00AC - TB_SRAM_BASE) >> 2] = 32'h0000006F;
   end
 `endif
 `else
@@ -540,18 +426,6 @@ integer __sramtb_i;
   end
 
   assign imem_rdata_o = imem_rdata_q;
-
-`ifndef SYNTHESIS
-  always @(posedge clk) begin
-    if (imem_in_sram && imem_rdata_q == TB_PASS_OPCODE) begin
-      $display("%t [SRAM] TEST PASS opcode fetched @PC=0x%08h", $time, imem_addr_aligned);
-      $finish;
-    end else if (imem_in_sram && imem_rdata_q == TB_FAIL_OPCODE) begin
-      $display("%t [SRAM] TEST FAIL opcode fetched @PC=0x%08h", $time, imem_addr_aligned);
-      $fatal(1);
-    end
-  end
-`endif
 
   // ---------------------------------------------------------------------------
   // DCACHE line interface

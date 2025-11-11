@@ -188,5 +188,14 @@ module id_ex_reg (
   assign ex_is_lui_o      = is_lui_q;
   assign ex_mem_funct3_o  = mem_f3_q;
 
-endmodule
+`ifndef SYNTHESIS
+  // Trace instructions entering EX stage to help debug dropped ops
+  always @(posedge clk) begin
+    if (!stall_i && !flush_i && id_valid_i) begin
+      $display("[%0t] ID_EX ISSUE pc=0x%08x rd=%0d rs1=%0d rs2=%0d mem_read=%0d mem_write=%0d wb_sel=%0d",
+               $time, id_pc_i, id_rd_i, id_rs1_i, id_rs2_i, id_mem_read_i, id_mem_write_i, id_wb_sel_i);
+    end
+  end
+`endif
 
+endmodule

@@ -61,9 +61,13 @@ module mem_wb(
       valid_d  = 1'b0;
       rd_wen_d = 1'b0;
     end else if (!i_stall) begin
-      valid_d    = i_valid; // 由上游保證 i_valid 為單拍提交
+      // Upstream guarantees i_valid is a single-cycle pulse
+
+      valid_d  = i_valid;
+
       rd_d       = i_rd;
-      rd_wen_d   = i_valid ? i_rd_wen : 1'b0; // 僅在提交當拍鎖存
+      rd_wen_d = i_valid ? i_rd_wen : 1'b0;
+
       wb_wdata_d = wb_mux(i_wb_sel, i_alu_result, i_mem_rdata, i_pc_plus4);
     end
   end

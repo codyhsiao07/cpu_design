@@ -94,5 +94,24 @@ module ex_mem_reg (
   assign mem_valid_o      = valid_q;
   assign mem_size_o       = mem_f3_q;
 
-endmodule
+`ifndef SYNTHESIS
+  always @(posedge clk) begin
+    if (!stall_i && !flush_i && ex_valid_i) begin
+      $display("[%0t] EX_MEM CAPTURE rd=%0d addr=0x%08x mem_read=%0d mem_write=%0d",
+               $time, ex_rd_i, ex_alu_result_i, ex_mem_read_i, ex_mem_write_i);
+    end
+    if (mem_valid_o && (mem_mem_read_o || mem_mem_write_o)) begin
+      $display("[%0t] EX_MEM OUT rd=%0d addr=0x%08x mem_read=%0d mem_write=%0d",
+               $time, mem_rd_o, mem_alu_result_o, mem_mem_read_o, mem_mem_write_o);
+    end
+    if (flush_i) begin
+      $display("[%0t] EX_MEM FLUSH asserted (ex_valid=%0d rd=%0d addr=0x%08x mem_read=%0d mem_write=%0d)",
+               $time, ex_valid_i, ex_rd_i, ex_alu_result_i, ex_mem_read_i, ex_mem_write_i);
+    end
+    if (stall_i) begin
+      $display("[%0t] EX_MEM STALL asserted", $time);
+    end
+  end
+`endif
 
+endmodule

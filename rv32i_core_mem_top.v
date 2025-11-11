@@ -193,6 +193,11 @@ module rv32i_core_mem_top (
   wire [4:0]  mem_rd;
   wire [31:0] mem_alu_result;
   wire [31:0] mem_pc4;
+  wire [31:0] mem_load_rdata;
+  wire        mem_load_valid;
+  wire        mem_load_active;
+  wire        mem_stall;
+  wire        mem_access_err;
   wire        wb_rd_wen;
   wire [4:0]  wb_rd;
   wire [31:0] wb_wdata;
@@ -277,11 +282,6 @@ module rv32i_core_mem_top (
   );
 
   // ================= MEM =================
-  wire [31:0] mem_load_rdata;
-  wire        mem_stall;
-  wire        mem_access_err;
-  wire        mem_load_valid;
-  wire        mem_load_active;
   wire        mem_addr_misaligned = mem_valid &&
                                     (mem_mem_read | mem_mem_write) &&
                                     (
@@ -363,7 +363,104 @@ module rv32i_core_mem_top (
   assign wb_wdata_o = rf_wdata;
   assign mem_access_err_o = mem_access_err;
 
+  // Track outstanding loads (issue -> completion) so hazard unit can stall dependents immediately
+  localparam integer LOAD_Q_DEPTH = 4;
+  reg [4:0] load_q_rd   [0:LOAD_Q_DEPTH-1];
+  reg       load_q_valid[0:LOAD_Q_DEPTH-1];
+  reg [1:0] load_q_head, load_q_tail;
+  reg [2:0] load_q_count;
+  reg [31:0] pending_load_mask;
+  reg        rd_still_pending;
+
+  wire load_issue = id_valid && id_mem_read && ~stall_id && ~flush_idex && (id_rd != 5'd0);
+  wire load_complete = mem_load_valid;
+
+  integer lq_i, lq_j;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      pending_load_mask <= 32'b0;
+      load_q_head       <= 2'd0;
+      load_q_tail       <= 2'd0;
+      load_q_count      <= 3'd0;
+      for (lq_i = 0; lq_i < LOAD_Q_DEPTH; lq_i = lq_i + 1) begin
+        load_q_rd[lq_i]    <= 5'd0;
+        load_q_valid[lq_i] <= 1'b0;
+      end
+    end else if (mem_err_event) begin
+      pending_load_mask <= 32'b0;
+      load_q_head       <= 2'd0;
+      load_q_tail       <= 2'd0;
+      load_q_count      <= 3'd0;
+      for (lq_i = 0; lq_i < LOAD_Q_DEPTH; lq_i = lq_i + 1) begin
+        load_q_valid[lq_i] <= 1'b0;
+      end
+    end else begin
+      rd_still_pending = 1'b0;
+      // Issue new load: push rd into queue and set mask
+      if (load_issue) begin
+        load_q_rd[load_q_tail]    <= id_rd;
+        load_q_valid[load_q_tail] <= 1'b1;
+        load_q_tail               <= load_q_tail + 2'd1;
+        load_q_count              <= load_q_count + 3'd1;
+        pending_load_mask[id_rd]  <= 1'b1;
+`ifndef SYNTHESIS
+        $display("[%0t] PENDING_LOAD SET rd=%0d", $time, ex_rd);
+`endif
+      end
+
+      // Completion: pop oldest rd and clear mask
+      if (load_complete && load_q_count != 3'd0) begin
+        if (load_q_valid[load_q_head]) begin
+          if (load_q_rd[load_q_head] != 5'd0) begin
+            rd_still_pending = 1'b0;
+            for (lq_j = 0; lq_j < LOAD_Q_DEPTH; lq_j = lq_j + 1) begin
+              if ((lq_j != load_q_head) &&
+                  load_q_valid[lq_j] &&
+                  (load_q_rd[lq_j] == load_q_rd[load_q_head])) begin
+                rd_still_pending = 1'b1;
+              end
+            end
+            if (load_issue && (ex_rd == load_q_rd[load_q_head]))
+              rd_still_pending = 1'b1;
+            if (!rd_still_pending)
+              pending_load_mask[load_q_rd[load_q_head]] <= 1'b0;
+          end
+`ifndef SYNTHESIS
+          $display("[%0t] PENDING_LOAD CLR rd=%0d", $time, load_q_rd[load_q_head]);
+`endif
+        end
+        load_q_valid[load_q_head] <= 1'b0;
+        load_q_head               <= load_q_head + 2'd1;
+        load_q_count              <= load_q_count - 3'd1;
+      end
+    end
+  end
+
+`ifndef SYNTHESIS
+  always @(posedge clk) begin
+    if (mem_err_event) begin
+      $display("[%0t] MEM_ERR_EVENT pulse (mem_access_err=%0d mem_valid=%0d mem_mem_read=%0d mem_mem_write=%0d)",
+               $time, mem_access_err, mem_valid, mem_mem_read, mem_mem_write);
+    end
+    if (ex_valid && ex_pc == 32'h0000_0024) begin
+      $display("[%0t] EX ADD x6 operands: rs1(x%0d)=0x%08x rs2(x%0d)=0x%08x -> result=0x%08x",
+               $time, ex_rs1, ex_rs1_val_fwd, ex_rs2, ex_rs2_val_fwd, ex_alu_result);
+    end
+    if (ex_valid && ex_pc == 32'h0000_0024) begin
+      $display("       FWD detail rs2_idx=%0d raw=0x%08x mem_rd=%0d mem_valid=%0d mem_reg_write=%0d mem_wb_sel=%0d mem_load_valid=%0d mem_alu=0x%08x mem_load=0x%08x wb_rd=%0d wb_wdata=0x%08x",
+               ex_rs2, ex_rs2_val, mem_rd, mem_valid, mem_reg_write, mem_wb_sel,
+               mem_load_valid, mem_alu_result, mem_load_rdata, wb_rd, wb_wdata);
+    end
+    if (rf_we && (rf_waddr == 5'd5)) begin
+      $display("[%0t] WB WRITE x5 <= 0x%08x", $time, rf_wdata);
+    end
+  end
+`endif
+
   // ================= Hazard/Control =================
+  wire stall_if_hdu, stall_id_hdu, stall_ex_hdu, stall_exmem_hdu;
+  wire flush_ifid_hdu, flush_idex_hdu;
+
   hazard_unit u_hdu (
     // ID
     .id_valid_i        (id_valid),
@@ -380,16 +477,26 @@ module rv32i_core_mem_top (
     .mem_rd_i          (mem_rd),
     .mem_reg_write_i   (mem_reg_write),
     .mem_stall_i       (mem_stall),
+    .mem_load_active_i (mem_load_active),
+    .pending_load_mask_i(pending_load_mask),
     .ifetch_stall_i   (icache_stall),
     // Redirect
     .redirect_valid_i  (redirect_valid),
     // Outputs
-    .stall_if_o        (stall_if),
-    .stall_id_o        (stall_id),
-    .stall_ex_o        (stall_ex),
-    .stall_exmem_o     (stall_exmem),
-    .flush_ifid_o      (flush_ifid),
-    .flush_idex_o      (flush_idex)
+    .stall_if_o        (stall_if_hdu),
+    .stall_id_o        (stall_id_hdu),
+    .stall_ex_o        (stall_ex_hdu),
+    .stall_exmem_o     (stall_exmem_hdu),
+    .flush_ifid_o      (flush_ifid_hdu),
+    .flush_idex_o      (flush_idex_hdu)
   );
+
+  // Escalate mem_err_event into full-pipe recovery: kill younger instructions and freeze front-end.
+  assign stall_if    = stall_if_hdu | mem_err_event;
+  assign stall_id    = stall_id_hdu | mem_err_event;
+  assign stall_ex    = stall_ex_hdu;
+  assign stall_exmem = stall_exmem_hdu;
+  assign flush_ifid  = flush_ifid_hdu | mem_err_event;
+  assign flush_idex  = flush_idex_hdu | mem_err_event;
 
 endmodule

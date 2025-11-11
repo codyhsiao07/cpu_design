@@ -48,7 +48,15 @@ module mem_stage (
   reg        req_pending_q;    // request waiting for downstream accept
 
   wire mem_op_active = mem_mem_read_i | mem_mem_write_i;
-  wire new_req = mem_valid_i & mem_op_active & ~busy_q & ~done_q;
+  wire same_mem_inputs =
+      (mem_mem_write_i == we_q) &&
+      (mem_mem_read_i  == mem_read_q) &&
+      (mem_alu_result_i == addr_q) &&
+      ((we_q ? (mem_store_data_i == wdata_q) : 1'b1)) &&
+      (mem_size_i == size_f3_q);
+
+  wire done_block = done_q & same_mem_inputs;
+  wire new_req = mem_valid_i & mem_op_active & ~busy_q & ~done_block;
   wire new_load_req = new_req & ~mem_mem_write_i; // pulse when accepting a load
 
   wire [1:0] size2_q = size_f3_q[1:0];   // 00=byte,01=half,10=word
@@ -84,13 +92,6 @@ module mem_stage (
          sz_half ? {{16{sign_bit}}, load_aligned[15:0]} :
                    load_aligned) :
         load_aligned;
-
-  wire same_mem_inputs =
-      (mem_mem_write_i == we_q) &&
-      (mem_mem_read_i  == mem_read_q) &&
-      (mem_alu_result_i == addr_q) &&
-      ((we_q ? (mem_store_data_i == wdata_q) : 1'b1)) &&
-      (mem_size_i == size_f3_q);
 
 
   always @(posedge clk or negedge rst_n) begin
@@ -155,6 +156,14 @@ module mem_stage (
   end
 
   // -------------------- request outputs --------------------
+`ifndef SYNTHESIS
+  always @(posedge clk) begin
+    if (mem_valid_i) begin
+      $display("[%0t] MEM_STAGE INPUT mem_read=%0d mem_write=%0d addr=0x%08x stall=%0d",
+               $time, mem_mem_read_i, mem_mem_write_i, mem_alu_result_i, mem_stall_o);
+    end
+  end
+`endif
   assign dmem_req_o  = req_pending_q;
   assign dmem_we_o   = we_q;
   assign dmem_addr_o = addr_q;       // byte address (downstream word-aligns)
@@ -212,5 +221,23 @@ module mem_stage (
 
   // -------------------- stall --------------------
   assign mem_stall_o = busy_q | new_req;
+
+`ifndef SYNTHESIS
+  // Debug prints to trace MEM transactions and responses during simulation
+  always @(posedge clk) begin
+    if (new_req) begin
+      $display("[%0t] MEM_STAGE REQ we=%0d addr=0x%08x size=%0d",
+               $time, mem_mem_write_i, mem_alu_result_i, mem_size_i);
+      if (mem_mem_write_i) begin
+        $display("         store_data=0x%08x wstrb=%b",
+                 mem_store_data_i, mk_wstrb(mem_size_i, mem_alu_result_i[1:0]));
+      end
+    end
+    if (load_resp_fire) begin
+      $display("[%0t] MEM_STAGE LOAD_RSP addr=0x%08x data=0x%08x",
+               $time, addr_q, load_result);
+    end
+  end
+`endif
 
 endmodule

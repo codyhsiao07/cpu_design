@@ -77,11 +77,14 @@ module top_cache_sram #(
   wire                g_allow;
   wire [XLEN/8-1:0]   g_wstrb_mask;
   wire                g_err_unused;
+  wire                guard_block_wr;
+  wire                guard_block_fire;
+  reg                 guard_err_pulse_q;
 
   mem_guard
   #(
     TEXT_BASE_ADDR, TEXT_LAST_ADDR,
-    DATA_BASE_ADDR, DATA_LAST_ADDR, SRAM_LAST_ADDR,
+    DATA_BASE_ADDR, DATA_LAST_ADDR, SRAM_BASE_ADDR, SRAM_LAST_ADDR,
     0,  // P_ALLOW_TEXT_WR   = 0 (TEXT write-protect)
     0,  // P_TEXT_WR_ERR     = 0 (don't raise err on TEXT write attempt at this layer)
     1,  // P_OOR_READ_ERR    = 1 (informational; we don't block read at this layer)
@@ -108,7 +111,7 @@ module top_cache_sram #(
   wire                    g_resp_err;
 
   assign g_req_valid = d_req_valid & g_allow;
-  assign d_req_ready = g_allow ? g_req_ready : 1'b1;  // blocked TEXT store: handshake consumed here
+  assign d_req_ready = g_allow ? g_req_ready : 1'b1;  // blocked TEXT/OOR store: handshake consumed here
 
   assign g_req_rw    = d_req_rw;
   assign g_req_addr  = d_req_addr;
@@ -127,6 +130,8 @@ module top_cache_sram #(
   wire                    m_resp_valid;
   wire      [DCACHE_LINE_BYTES*8-1:0] m_resp_rdata;
   wire                    m_resp_err;
+
+  wire                    d_store_done_core;
 
   dcache #(
     .XLEN           (XLEN),
@@ -150,7 +155,7 @@ module top_cache_sram #(
     .cpu_resp_err        (g_resp_err),
     .cpu_stall_ld_miss   (d_stall_ld_miss),
     .cpu_stall_st_buf    (d_stall_st_buf),
-    .cpu_store_done_o    (d_store_done),
+    .cpu_store_done_o    (d_store_done_core),
 
     // Memory line interface (to SRAM)
     .mem_req_valid       (m_req_valid),
@@ -165,9 +170,21 @@ module top_cache_sram #(
   );
 
   // Forward dcache responses to top outputs
+  // Guard a blocked store by fabricating a one-cycle completion + error pulse so MEM stage can recover.
+  assign guard_block_wr   = d_req_valid & d_req_rw & ~g_allow;
+  assign guard_block_fire = guard_block_wr & d_req_ready;
+
+  always @(posedge clk or negedge rstn) begin
+    if (!rstn)
+      guard_err_pulse_q <= 1'b0;
+    else
+      guard_err_pulse_q <= guard_block_fire;
+  end
+
+  assign d_store_done = d_store_done_core | guard_err_pulse_q;
   assign d_resp_valid = g_resp_valid;
   assign d_resp_rdata = g_resp_rdata;
-  assign d_resp_err   = g_resp_err;
+  assign d_resp_err   = g_resp_err | guard_err_pulse_q;
 
   // -------------------------
   // Unified on-chip SRAM (dual-port: I$ comb + D$ line iface)
