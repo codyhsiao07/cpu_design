@@ -1,85 +1,39 @@
-# RV32I Core and Cache System
+# RV32I Core + Cache + UART (Basys3-Ready)
 
-## Overview
-This repository contains a five-stage RV32I processor core plus an integrated instruction/data cache subsystem, reusable SRAM model, and a collection of self-checking testbenches. Most source files are written in Verilog-2001 with positional port connections to match course or lab constraints.
+This repository contains a five-stage RV32I pipeline with instruction/data caches, a parameterized SRAM model, a simple memory-mapped UART, and FPGA glue for the Digilent Basys3 board. All RTL is Verilog‑2001 with positional port connections to satisfy lab constraints.
+
+## Quick Start
+1. **Build your program** → produce a `$readmemh`-compatible file (e.g. `program.mem`) with addresses starting at `0x0000_0000` and total size < 225 KiB.
+2. **Hook the top** → instantiate `top_rv32i` or `basys3_top` with `.SRAM_INIT_FILE("program.mem")`. Simulation benches can override the same parameter.
+3. **Vivado flow** → use `basys3_top.v` as the FPGA entry point and `led.xdc` for constraints (100 MHz clock on W5, BTN_C reset, USB‑UART pins A18/B18, LEDs).
+4. **UART console** → connect to the Basys3 USB serial port at 115200/8N1. Writes to `0x1000_0000` become UART TX bytes; STATUS at `0x1000_0004` bit0 reports `tx_ready`.
+5. **LEDs** → LD0–LD14 show the most recent write-back value (`wb_wdata[14:0]`), LD15 mirrors `mem_access_err`. BTN_C provides reset—press once to restart firmware.
 
 ## Top-Level Builds
-- `final_top.v` - Minimal wrapper that instantiates `rv32i_core_mem_top` with positional ports. Intended as the chip-level integration point that exposes write-back and memory error observability.
-- `rv32i_core_mem_top.v` - Primary core build. Wires the IF/ID/EX/MEM/WB pipeline with caches and the memory bridge (`mem_cache_top`) so both instruction and data paths go through the cache/SRAM subsystem. Exposes commit and memory error signals for verification.
-- `temp/top.v` - Earlier `rv32i_core_top` version that drives bare IMEM/DMEM handshake ports (no caches). Useful for simpler memory models.
+- `basys3_top.v` – FPGA wrapper (clock, reset, UART, LEDs). Parameter `SRAM_INIT_FILE` points to the program hex.
+- `top_rv32i.v` – Minimal wrapper around `rv32i_core_mem_top` with configurable BRAM init file, UART baud, and MMIO window.
+- `rv32i_core_mem_top.v` – Full pipeline + caches + UART bridge. Exposes write-back taps and memory error flag for observability.
 
-## Pipeline Stages
-- `IF.v` - Program counter (`pc`) block with stall and redirect handling for instruction fetch.
-- `ID.v` - Register file (`regfile`) and decode logic (`id_stage`) that produce operands, immediates, and control signals.
-- `EX.v` - Execute stage (`ex_stage`) implementing the ALU, branch/jump target calculation, and redirect request generation.
-- `MEM.v` - Memory stage (`mem_stage`) that aligns load/store accesses, tracks outstanding transactions, and handshakes with the data cache bridge.
-- `WB.v` - Write-back stage (`wb_stage`) that finalizes register writes and provides optional forwarding taps.
-
-## Pipeline Registers
-- `IFID_register.v` - `if_id_reg`, the IF/ID pipeline register with stall/flush behavior and an injected NOP on flush.
-- `IDEX_register.v` - `id_ex_reg`, latching ID outputs (operands, control bits, and qualifiers) into the EX stage.
-- `EXMEM_register.v` - `ex_mem_reg`, transferring EX results and control to MEM while handling stalls and flushes.
-- `MEMWB_register.v` - `mem_wb`, the MEM/WB register with a built-in write-back mux and stall/flush handling.
-
-## Hazard and Control Helpers
-- `forward_unit.v` - Selects between original register values, MEM-stage data, and WB-stage data to feed the EX operands, giving priority to freshest results.
-- `hazard_unit.v` - Central hazard detector that manages load-use bubbles, generic RAW hazards without forwarding, MEM back-pressure, and IF fetch stalls.
-- `bp_static_nt.v` - Static not-taken branch predictor used for observability (PC still follows sequential fetch, but mispredict pulses are tracked).
-
-## Cache and Memory Subsystem
-- `icache.v` - 16 KB, 4-way set-associative instruction cache with pseudo-LRU replacement. Presents a simple fetch/stall interface and reads from combinational backing memory.
-- `dcache.v` - 32 KB, 2-way data cache with write-back/write-allocate policy, a tiny store buffer, and a cache-line refill interface toward SRAM.
-- `MEM_bridge.v` - `cache_bridge_mem` wrapper that links `mem_stage` word-level transactions to the cache/SRAM complex, including out-of-range detection and error flagging.
-- `MEM_top.v` - `mem_cache_top` integration: glues `mem_stage`, `cache_bridge_mem`, and `top_cache_sram`, tracks alignment faults, and exposes error pulses to the core.
-- `mem_guard.v` - Simple combinational guard that enforces region protections (TEXT/DATA/STACK) and strobe masking before requests reach the caches.
-- `top_cache.v` - `top_cache_sram`, a top-level that connects `icache` and `dcache` to a unified SRAM, instantiating `mem_guard` and ferrying cache-line traffic.
-- `sram_2mb.v` - Parameterized 2 MiB dual-port SRAM model (instruction combinational port plus cache-line data port). Default address window starts at `0x8000_0000` for standalone sims.
-- `sram_test_final.v` - Alternate copy of `sram_2mb` with default base address `0x0000_0000`, used in course deliverables that expect a zero-based memory map.
+## Pipeline & MMIO Highlights
+- Classic IF/ID/EX/MEM/WB with forwarding (`forward_unit.v`) and hazard control (`hazard_unit.v`).
+- `MEM_top.v` + `MEM_bridge.v` glue the MEM stage to caches and SRAM. The bridge also decodes a UART MMIO region (`0x1000_0000..0x1000_00FF`).
+- `uart_mmio.v` – lightweight transmit-side UART; STATUS bit0 indicates `tx_ready`, DATA register puts bytes on the USB‑UART TX pin.
+- `sram_test_final.v` – SRAM model with macro-driven test programs (`SRAM_TB_*` defines). `SRAM_TB_UART_SMOKE` now emits ASCII “PASS” and sets x4=17 to satisfy the main TB.
 
 ## Testbenches
-- `temp/final_top_tb.v` - `tb_top_rv32i_inline`, a simple top-level core testbench that checks write-back activity and halts when register x4 reaches the programmed pass signature.
-- `MEM_top_full_tb.v` - `tb_mem_edge_final`, a wide-coverage `mem_cache_top` testbench with directed cases for alignment, region protection, store/load ordering, and timeouts.
-- `temp/MEM_top_tb.v` - `tb_mem_cache_top`, earlier self-checking bench for `mem_cache_top` focusing on basic load/store flows and error paths.
-- `temp/tb_mem.v` - `tb_mem_full`, another variant that shares the same device-under-test but uses explicit parameter overrides and helper tasks for scenario scripting.
-- `tp_cache_top.v` - `tb_top_cache_sram_final`, drives `top_cache_sram` directly with fetch and data traffic to exercise guard behavior and cache refill paths.
-- `replaced_and_store_file/teststorage.v` - Archived copy of `tb_top_cache_sram_final`, retained for reference alongside newer benches.
+- `final_top_tb.v` – main top-level TB. Supports plusargs, UART byte tracing, and PASS/FAIL checks (x4==17). Use `+define+SRAM_TB_UART_SMOKE` to run the UART smoke program quickly.
+- `MEM_top_full_tb.v`, `temp/MEM_top_tb.v`, `temp/tb_mem.v` – standalone benches for the MEM/cache subsystem with directed scenarios (alignment, region protection, error handling).
 
-## Additional Design Utilities
-- `replaced_and_store_file/cpu_store_guard.v` - Prior CPU-side guard module that blocked TEXT writes before they reached the data cache.
-- `replaced_and_store_file/sram_guard.v` - Legacy wrapper (`sram_2mb_guard`) providing stricter write filtering around `sram_2mb`.
-- `replaced_and_store_file/top_cache_sram.v` - Earlier revision of `top_cache_sram` with optional memory initialization support.
+## Notes & Tips
+- Most modules use positional ports—double-check ordering when instantiating.
+- When swapping BRAM images, update the `SRAM_INIT_FILE` parameter and add the `.mem` to your Vivado project as a Memory Initialization File.
+- UART RX is currently a stub (held high). Only TX is implemented; receiving can be added later inside `uart_mmio.v` if needed.
+- LED[15] lights up when `mem_access_err` is asserted (alignment faults, illegal region, etc.). In a healthy run this LED stays off.
 
-## Notes
-- `.gitattributes` sets text normalization for the repository.
-- Many modules rely on positional port connections to satisfy toolchain restrictions; keep the ordering in sync when reusing blocks.
-- When swapping between SRAM models, ensure the base address matches the program image you load into simulation.
+## Typical Basys3 Run
+1. Generate `program.mem` (e.g. `riscv32-unknown-elf-objcopy -O verilog program.elf program.mem`).
+2. In `basys3_top.v`, instantiate `top_rv32i #(.SRAM_INIT_FILE("program.mem"))`.
+3. Vivado → add all RTL + hex + `led.xdc`, synthesize, implement, bitstream.
+4. Program Basys3; open a serial terminal at 115200/8N1 to observe UART output and watch LEDs for quick debugging.
 
-## Recent Changes (Pipeline Visibility, Load Hazard Control, Testbench Expansion)
-
-This update focuses on:
-1) Improved visibility across the EX→MEM→WB pipeline path
-2) Robust load-dependent hazard and MEM backpressure handling
-3) A fully scriptable, macro-driven top-level test suite
-
-### Pipeline Registers
-- **EXMEM_register.v (100–113)** — Added `ifndef SYNTHESIS` event logs and stall/flush assertions.
-- **IDEX_register.v (189–198)** — Added a trace when instructions advance from ID into EX without stall/flush.
-- **MEMWB_register.v (63–71)** — Clarified the single-cycle `i_valid` contract and simplified `rd_wen` latching.
-
-### MEM Stage and Hazard Unit
-- **MEM.v (51–60, 162–239)** — Reworked duplicate-request suppression, introduced `done_block`, and added detailed sim prints.
-- **hazard_unit.v (30–123)** — Added `mem_load_active_i` and `pending_load_mask_i`, now stalling on outstanding loads.
-- **rv32i_core_mem_top.v (193–500)** — Implemented 4-entry pending-load tracking and synchronized mem_err_event recovery.
-- **temp/top.v (430–468)** — Mirrored pending-load mask logic in the simpler core build.
-- **top_cache.v (77–188)** — Added guard-aware completion/error pulses.
-- **mem_guard.v (3–45)** — Added `P_SRAM_BASE` param and clarified region enforcement logic.
-
-### Testbench
-- **final_top_tb.v (1–149)** — Rebuilt testbench harness: plusargs, realtime clock, progress logging, PASS/FAIL handlers.
-- **sram_test_final.v (90–514)** — Replaced inline program with macro-configurable multi-scenario test suite.
-
-### File Moves
-- Removed: `sram_2mb.v`
-- Added: `need/sram_2mb.v`, `tmp.txt` (staged for cleanup/replacement)
-- `MEM_bridge.v` flagged but unchanged except for line endings.
-
+Enjoy hacking on the core! PRs for full UART RX, deeper BRAM loaders, or additional FPGA wrappers are welcome.

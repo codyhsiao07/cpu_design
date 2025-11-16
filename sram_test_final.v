@@ -5,21 +5,21 @@
 //   * Write requests use byte strobes (one per byte in the line)
 //   * Read requests complete one cycle after acceptance
 //
-// Default capacity = 2 MiB, address window 0x8000_0000 .. 0x801F_FFFF
+// Default capacity = 225 KiB, address window 0x0000_0000 .. 0x0003_83FF
 // Region partitions: TEXT (read-only), DATA/STACK (read-write)
 // -----------------------------------------------------------------------------
 module sram_2mb #(
   parameter [31:0] SRAM_BASE_ADDR  = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES = 32'd2097152,   // 2 MiB
-  parameter [31:0] SRAM_LAST_ADDR  = 32'h001F_FFFF, // base + size - 1
+  parameter [31:0] SRAM_SIZE_BYTES = 32'd230400,    // 225 KiB (Basys3 BRAM budget)
+  parameter [31:0] SRAM_LAST_ADDR  = 32'h0003_83FF, // base + size - 1
 
   // Region partitions (must fully cover SRAM window)
   parameter [31:0] TEXT_BASE_ADDR  = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR  = 32'h000F_FFFF,
-  parameter [31:0] DATA_BASE_ADDR  = 32'h0010_0000,
-  parameter [31:0] DATA_LAST_ADDR  = 32'h001B_FFFF,
-  parameter [31:0] STACK_BASE_ADDR = 32'h001C_0000,
-  parameter [31:0] STACK_LAST_ADDR = 32'h001F_FFFF,
+  parameter [31:0] TEXT_LAST_ADDR  = 32'h0000_7FFF,
+  parameter [31:0] DATA_BASE_ADDR  = 32'h0000_8000,
+  parameter [31:0] DATA_LAST_ADDR  = 32'h0002_7FFF,
+  parameter [31:0] STACK_BASE_ADDR = 32'h0002_8000,
+  parameter [31:0] STACK_LAST_ADDR = 32'h0003_83FF,
 
   // Cache line geometry (must match dcache)
   parameter integer LINE_BYTES     = 32,
@@ -66,22 +66,38 @@ module sram_2mb #(
   localparam integer LINE_BITS        = LINE_BYTES * 8;
   localparam integer LINE_WORDS       = LINE_BYTES / 4;
   localparam integer LINE_OFF_BITS    = clog2(LINE_BYTES);
-  localparam integer MEM_WORDS        = SRAM_SIZE_BYTES / 4;
+  localparam integer MAX_BRAM_BYTES   = 32'd230400; // 225 KiB
+  localparam integer PARAM_LAST_SPAN  =
+      (SRAM_LAST_ADDR >= SRAM_BASE_ADDR) ? (SRAM_LAST_ADDR - SRAM_BASE_ADDR + 32'd1) : 32'd0;
+  localparam integer REQUESTED_BYTES  =
+      (SRAM_SIZE_BYTES < PARAM_LAST_SPAN) ? SRAM_SIZE_BYTES : PARAM_LAST_SPAN;
+  localparam integer CLAMPED_BYTES    =
+      (REQUESTED_BYTES > MAX_BRAM_BYTES) ? MAX_BRAM_BYTES : REQUESTED_BYTES;
+  localparam integer SRAM_SIZE_BYTES_EFF =
+      (CLAMPED_BYTES / LINE_BYTES) * LINE_BYTES;
+  localparam [31:0] SRAM_LAST_ADDR_EFF = SRAM_BASE_ADDR + SRAM_SIZE_BYTES_EFF - 32'd1;
+  localparam integer MEM_WORDS        = (SRAM_SIZE_BYTES_EFF / 4);
 
+`ifndef SYNTHESIS
   initial begin
     if ((LINE_BYTES % 4) != 0) begin
       $display("%t [SRAM] ERROR: LINE_BYTES (%0d) must be divisible by 4.", $time, LINE_BYTES);
       $finish;
     end
-    if ((SRAM_SIZE_BYTES % LINE_BYTES) != 0) begin
-      $display("%t [SRAM] ERROR: SRAM_SIZE_BYTES must be a multiple of LINE_BYTES.", $time);
+    if (SRAM_SIZE_BYTES_EFF == 0) begin
+      $display("%t [SRAM] ERROR: Effective SRAM size collapsed to zero bytes. Check parameters.", $time);
+      $finish;
+    end
+    if ((SRAM_SIZE_BYTES_EFF % LINE_BYTES) != 0) begin
+      $display("%t [SRAM] ERROR: Effective SRAM size must be a multiple of LINE_BYTES.", $time);
       $finish;
     end
   end
+`endif
 
   // ---------------------------------------------------------------------------
   // Backing storage (word-addressable)
-  reg [31:0] mem [0:MEM_WORDS-1];
+  (* ram_style = "block" *) reg [31:0] mem [0:MEM_WORDS-1];
 
 
 // sram_test_programs_full.vh  (Verilog-2001)
@@ -103,9 +119,9 @@ module sram_2mb #(
 // Optional address overrides (compile-time macros):
 //   -D SRAM_TB_TEXT_BASE=32'h0000_0000
 //   -D SRAM_TB_TEXT_LAST=32'h0000_7FFC
-//   -D SRAM_TB_DATA_BASE=32'h0010_0000
+//   -D SRAM_TB_DATA_BASE=32'h0000_8000
 //   -D SRAM_TB_SRAM_BASE=32'h0000_0000
-//   -D SRAM_TB_SRAM_SIZE_BYTES=32'h0020_0000   // 2MB default
+//   -D SRAM_TB_SRAM_SIZE_BYTES=32'h0003_8400   // 225 KiB default
 //
 `ifndef SRAM_TB_TEXT_BASE
 `define SRAM_TB_TEXT_BASE 32'h0000_0000
@@ -114,13 +130,13 @@ module sram_2mb #(
 `define SRAM_TB_TEXT_LAST 32'h0000_7FFC
 `endif
 `ifndef SRAM_TB_DATA_BASE
-`define SRAM_TB_DATA_BASE 32'h0010_0000
+`define SRAM_TB_DATA_BASE 32'h0000_8000
 `endif
 `ifndef SRAM_TB_SRAM_BASE
 `define SRAM_TB_SRAM_BASE 32'h0000_0000
 `endif
 `ifndef SRAM_TB_SRAM_SIZE_BYTES
-`define SRAM_TB_SRAM_SIZE_BYTES 32'h0020_0000 // 2MB
+`define SRAM_TB_SRAM_SIZE_BYTES 32'h0003_8400 // 225 KiB
 `endif
 `ifndef SRAM_TB_PASS_OPCODE
 `define SRAM_TB_PASS_OPCODE 32'hC0DE_CAFE
@@ -138,6 +154,7 @@ localparam [31:0] TB_PASS_OPCODE = `SRAM_TB_PASS_OPCODE;
 localparam [31:0] TB_FAIL_OPCODE = `SRAM_TB_FAIL_OPCODE;
 
 integer __sramtb_i;
+integer __sramtb_uart_i;
 
 // Default to the shortened SUITE_FULL unless another mode macro is supplied.
 `ifndef SRAM_TB_ILLEGAL_FAIL
@@ -163,6 +180,8 @@ integer __sramtb_i;
 `endif
 
 `ifndef SYNTHESIS
+generate
+  if (INIT_FILE == "") begin : g_inline_tb
 
 `ifdef SRAM_TB_ILLEGAL_FAIL
   localparam [31:0] BOOT_PC = TB_TEXT_BASE;
@@ -175,6 +194,27 @@ integer __sramtb_i;
     mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h0DE00093;
     mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00152023;
     mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h0000006F;
+  end
+
+`elsif SRAM_TB_UART_SMOKE
+  localparam [31:0] BOOT_PC = TB_TEXT_BASE;
+  initial begin
+    $display("SRAM_TB MODE = UART_SMOKE  UART_BASE=0x1000_0000");
+    #1;
+    for (__sramtb_uart_i = 0; __sramtb_uart_i < 32; __sramtb_uart_i = __sramtb_uart_i + 1)
+      mem[((BOOT_PC - TB_SRAM_BASE) >> 2) + __sramtb_uart_i] = 32'h00000013;
+    mem[(BOOT_PC + 32'h0000 - TB_SRAM_BASE) >> 2] = 32'h100002B7; // lui x5,0x1000_0000
+
+    mem[(BOOT_PC + 32'h0004 - TB_SRAM_BASE) >> 2] = 32'h05000313; // addi x6,x0,'P'
+    mem[(BOOT_PC + 32'h0008 - TB_SRAM_BASE) >> 2] = 32'h00628023; // sb x6,0(x5)
+    mem[(BOOT_PC + 32'h000C - TB_SRAM_BASE) >> 2] = 32'h04100313; // addi x6,x0,'A'
+    mem[(BOOT_PC + 32'h0010 - TB_SRAM_BASE) >> 2] = 32'h00628023; // sb x6,0(x5)
+    mem[(BOOT_PC + 32'h0014 - TB_SRAM_BASE) >> 2] = 32'h05300313; // addi x6,x0,'S'
+    mem[(BOOT_PC + 32'h0018 - TB_SRAM_BASE) >> 2] = 32'h00628023; // sb x6,0(x5)
+    mem[(BOOT_PC + 32'h001C - TB_SRAM_BASE) >> 2] = 32'h05300313; // addi x6,x0,'S'
+    mem[(BOOT_PC + 32'h0020 - TB_SRAM_BASE) >> 2] = 32'h00628023; // sb x6,0(x5)
+    mem[(BOOT_PC + 32'h0024 - TB_SRAM_BASE) >> 2] = 32'h01100213; // addi x4,x0,17
+    mem[(BOOT_PC + 32'h0028 - TB_SRAM_BASE) >> 2] = 32'h0000006F; // jal x0,0
   end
 
 `elsif SRAM_TB_NEG_OOR_HI_STORE
@@ -516,6 +556,12 @@ integer __sramtb_i;
   end
 `endif
 
+  end else begin : g_initfile_override
+    initial begin
+      $display("%t [SRAM] INFO: INIT_FILE (%s) set -> skipping inline TB suite.", $time, INIT_FILE);
+    end
+  end
+endgenerate
 `endif // !SYNTHESIS
 
 
@@ -526,7 +572,7 @@ integer __sramtb_i;
   // ---------------------------------------------------------------------------
   // ICACHE combinational read (word-aligned)
   wire [31:0] imem_addr_aligned = {imem_addr_i[31:2], 2'b00};
-  wire        imem_in_sram      = (imem_addr_aligned >= SRAM_BASE_ADDR) && (imem_addr_aligned <= SRAM_LAST_ADDR);
+  wire        imem_in_sram      = (imem_addr_aligned >= SRAM_BASE_ADDR) && (imem_addr_aligned <= SRAM_LAST_ADDR_EFF);
   reg  [31:0] imem_rdata_q;
   integer     imem_word_idx;
 
@@ -557,7 +603,7 @@ integer __sramtb_i;
   // DCACHE line interface
   wire [31:0] line_base_addr = {dmem_addr_i[31:LINE_OFF_BITS], {LINE_OFF_BITS{1'b0}}};
   wire [31:0] line_last_addr = line_base_addr + (LINE_BYTES - 1);
-  wire        line_in_sram   = (line_base_addr >= SRAM_BASE_ADDR) && (line_last_addr <= SRAM_LAST_ADDR);
+  wire        line_in_sram   = (line_base_addr >= SRAM_BASE_ADDR) && (line_last_addr <= SRAM_LAST_ADDR_EFF);
 
   // Region overlap helpers (inclusive ranges)
   wire line_hits_text  = (line_base_addr <= TEXT_LAST_ADDR)  && (line_last_addr >= TEXT_BASE_ADDR);
@@ -635,11 +681,17 @@ integer __sramtb_i;
       if (dmem_req_i && dmem_ready_o) begin
         if (dmem_we_i) begin
           if (!line_in_sram) begin
+`ifndef SYNTHESIS
             $display("%t [SRAM] WARN: Write outside SRAM range at 0x%08h ignored.", $time, line_base_addr);
+`endif
           end else if (line_hits_text) begin
+`ifndef SYNTHESIS
             $display("%t [SRAM] ERROR: Write to read-only TEXT region (addr 0x%08h) ignored.", $time, line_base_addr);
+`endif
           end else if (!(line_hits_data || line_hits_stack)) begin
+`ifndef SYNTHESIS
             $display("%t [SRAM] WARN: Write to unmapped region at 0x%08h ignored.", $time, line_base_addr);
+`endif
           end else begin
             // Apply per-word strobes within the line
             for (w_idx = 0; w_idx < LINE_WORDS; w_idx = w_idx + 1) begin
@@ -656,8 +708,10 @@ integer __sramtb_i;
           pending_read_q    <= 1'b1;
           read_word_index_q <= line_word_index;
           read_in_range_q   <= line_in_sram;
+`ifndef SYNTHESIS
           if (!line_in_sram)
             $display("%t [SRAM] WARN: Read outside SRAM range at 0x%08h (returning zeros).", $time, line_base_addr);
+`endif
         end
       end
     end
@@ -669,19 +723,23 @@ integer __sramtb_i;
   initial begin
     for (init_idx = 0; init_idx < MEM_WORDS; init_idx = init_idx + 1)
       mem[init_idx] = 32'h0;
+    if (INIT_FILE != "") begin
+`ifndef SYNTHESIS
+      $display("%t [SRAM] INFO: Loading init file %s", $time, INIT_FILE);
+`endif
+      $readmemh(INIT_FILE, mem);
+    end
+  end
 
+`ifndef SYNTHESIS
+  initial begin
     if (TEXT_BASE_ADDR     != SRAM_BASE_ADDR ||
-        STACK_LAST_ADDR    != SRAM_LAST_ADDR ||
+        STACK_LAST_ADDR    != SRAM_LAST_ADDR_EFF ||
         TEXT_LAST_ADDR + 1 != DATA_BASE_ADDR ||
         DATA_LAST_ADDR + 1 != STACK_BASE_ADDR) begin
       $display("%t [SRAM] ERROR: Region partition does not fully cover SRAM window.", $time);
       $fatal(1);
     end
-
-    if (INIT_FILE != "") begin
-      #1;
-      $display("%t [SRAM] INFO: Loading init file %s", $time, INIT_FILE);
-      $readmemh(INIT_FILE, mem);
-    end
   end
+`endif
 endmodule

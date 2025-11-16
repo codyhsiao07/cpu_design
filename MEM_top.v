@@ -10,14 +10,19 @@ module mem_cache_top
   parameter integer DCACHE_WAYS        = 2,
   parameter integer DCACHE_WBUF_DEPTH  = 1,
   parameter [31:0] SRAM_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES     = 32'd2097152,
-  parameter [31:0] SRAM_LAST_ADDR      = 32'h001F_FFFF,
+  parameter [31:0] SRAM_SIZE_BYTES     = 32'd230400,
+  parameter [31:0] SRAM_LAST_ADDR      = 32'h0003_83FF,
   parameter [31:0] TEXT_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR      = 32'h000F_FFFF,
-  parameter [31:0] DATA_BASE_ADDR      = 32'h0010_0000,
-  parameter [31:0] DATA_LAST_ADDR      = 32'h001B_FFFF,
-  parameter [31:0] STACK_BASE_ADDR     = 32'h001C_0000,
-  parameter [31:0] STACK_LAST_ADDR     = 32'h001F_FFFF
+  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_7FFF,
+  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_8000,
+  parameter [31:0] DATA_LAST_ADDR      = 32'h0002_7FFF,
+  parameter [31:0] STACK_BASE_ADDR     = 32'h0002_8000,
+  parameter [31:0] STACK_LAST_ADDR     = 32'h0003_83FF,
+  parameter        SRAM_INIT_FILE      = "",
+  parameter integer CLK_FREQ_HZ        = 100_000_000,
+  parameter integer UART_BAUD          = 115200,
+  parameter [31:0] UART_BASE_ADDR      = 32'h1000_0000,
+  parameter [31:0] UART_LAST_ADDR      = 32'h1000_00FF
 )
 (
   input              clk,
@@ -47,7 +52,11 @@ module mem_cache_top
   output             ifetch_stall_o,
 
   // Alignment fault detected before MEM stage issues a request
-  input              mem_align_err_i
+  input              mem_align_err_i,
+
+  // UART pins
+  input              uart_rx_i,
+  output             uart_tx_o
 );
 
   // Wires between MEM and bridge
@@ -114,11 +123,18 @@ module mem_cache_top
     DATA_BASE_ADDR,
     DATA_LAST_ADDR,
     STACK_BASE_ADDR,
-    STACK_LAST_ADDR
+    STACK_LAST_ADDR,
+    SRAM_INIT_FILE,
+    CLK_FREQ_HZ,
+    UART_BAUD,
+    UART_BASE_ADDR,
+    UART_LAST_ADDR
   )
   u_cb (
     clk,
     rst_n,
+    uart_rx_i,
+    uart_tx_o,
     ifetch_valid_i,
     ifetch_addr_i,
     ifetch_data,        // fetch_data_o (unused)

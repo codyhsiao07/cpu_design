@@ -2,9 +2,17 @@
 // - Reuses pipeline blocks from rv32i_core_top but routes instruction/data
 //   accesses through mem_cache_top (cache_bridge + top_cache_sram).
 // - Provides WB observability + MEM access error flag for testbench visibility.
-module rv32i_core_mem_top (
+module rv32i_core_mem_top #(
+  parameter        SRAM_INIT_FILE = "",
+  parameter integer CLK_FREQ_HZ   = 100_000_000,
+  parameter integer UART_BAUD     = 115200,
+  parameter [31:0] UART_BASE_ADDR = 32'h1000_0000,
+  parameter [31:0] UART_LAST_ADDR = 32'h1000_00FF
+)(
   input         clk,
   input         rst_n,
+  input         uart_rx_i,
+  output        uart_tx_o,
   // Optional: expose WB commit for TB observation
   output        wb_we_o,
   output [4:0]  wb_rd_o,
@@ -289,7 +297,15 @@ module rv32i_core_mem_top (
                                       (mem_size[1:0] == 2'b01 && mem_alu_result[0]  != 1'b0)
                                     );
 
-  mem_cache_top u_mem_top (
+  mem_cache_top
+  #(
+    .SRAM_INIT_FILE (SRAM_INIT_FILE),
+    .CLK_FREQ_HZ    (CLK_FREQ_HZ),
+    .UART_BAUD      (UART_BAUD),
+    .UART_BASE_ADDR (UART_BASE_ADDR),
+    .UART_LAST_ADDR (UART_LAST_ADDR)
+  )
+  u_mem_top (
     .clk              (clk),
     .rst_n            (rst_n),
     .mem_valid_i      (mem_valid),
@@ -308,7 +324,9 @@ module rv32i_core_mem_top (
     .ifetch_addr_i    (if_pc),
     .ifetch_data_o    (if_instr),
     .ifetch_stall_o   (icache_stall),
-    .mem_align_err_i  (mem_addr_misaligned)
+    .mem_align_err_i  (mem_addr_misaligned),
+    .uart_rx_i        (uart_rx_i),
+    .uart_tx_o        (uart_tx_o)
   );
 
 

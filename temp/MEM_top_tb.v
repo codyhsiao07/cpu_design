@@ -6,7 +6,7 @@ module tb_mem_cache_top;
   reg clk;
   reg rst_n;
   initial begin clk = 1'b0; forever #5 clk = ~clk; end
-  initial begin rst_n = 1'b0; repeat (10) @(posedge clk); rst_n = 1'b1; end
+  initial begin rst_n = 1'b0; uart_rx = 1'b1; repeat (10) @(posedge clk); rst_n = 1'b1; end
 
   // DUT-side MEM interface
   reg         mem_valid_i;
@@ -23,6 +23,8 @@ module tb_mem_cache_top;
   wire        mem_err_event_dummy;
   wire [31:0] ifetch_data_dummy;
   wire        ifetch_stall_dummy;
+  reg         uart_rx;
+  wire        uart_tx;
 
   // Instantiate DUT (positional)
   mem_cache_top dut (
@@ -44,7 +46,9 @@ module tb_mem_cache_top;
     32'h0,
     ifetch_data_dummy,
     ifetch_stall_dummy,
-    1'b0
+    1'b0,
+    uart_rx,
+    uart_tx
   );
 
   // Helpers

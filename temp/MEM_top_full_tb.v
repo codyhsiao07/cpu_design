@@ -9,6 +9,8 @@ module tb_mem_edge_final;
   // ---------------- Clock / Reset ----------------
   reg clk;
   reg rst_n;
+  reg uart_rx;
+  wire uart_tx;
 
   initial begin
     clk = 1'b0;
@@ -17,7 +19,8 @@ module tb_mem_edge_final;
 
   task do_reset;
     begin
-      rst_n = 1'b0;
+      rst_n  = 1'b0;
+      uart_rx = 1'b1;
       repeat (10) @(posedge clk);
       rst_n = 1'b1;
       repeat (10) @(posedge clk);
@@ -57,6 +60,8 @@ module tb_mem_edge_final;
   wire             mem_err_event_dummy;
   wire [31:0]      ifetch_data_dummy;
   wire             ifetch_stall_dummy;
+  reg              uart_rx;
+  wire             uart_tx;
 
   // ---------------- DUT Instance ----------------
   mem_cache_top
@@ -74,7 +79,8 @@ module tb_mem_edge_final;
     DATA_BASE_ADDR,
     DATA_LAST_ADDR,
     STACK_BASE_ADDR,
-    STACK_LAST_ADDR
+    STACK_LAST_ADDR,
+    ""
   )
   u_top (
     clk,
@@ -95,7 +101,9 @@ module tb_mem_edge_final;
     32'h0,
     ifetch_data_dummy,
     ifetch_stall_dummy,
-    1'b0
+    1'b0,
+    uart_rx,
+    uart_tx
   );
 
   // ---------------- Heartbeat / progress ----------------

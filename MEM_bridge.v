@@ -1,7 +1,5 @@
 `timescale 1ns/1ps
-// cache_bridge_mem.v - pass-through bridge (Verilog-2001, positional instantiation)
-// MEM.v must output already-aligned wdata/wstrb.
-
+// cache_bridge_mem.v - pass-through bridge with UART MMIO (Verilog-2001)
 module cache_bridge_mem
 #(
   parameter integer XLEN               = 32,
@@ -10,18 +8,24 @@ module cache_bridge_mem
   parameter integer DCACHE_WAYS        = 2,
   parameter integer DCACHE_WBUF_DEPTH  = 1,
   parameter [31:0] SRAM_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES     = 32'd2097152,
-  parameter [31:0] SRAM_LAST_ADDR      = 32'h001F_FFFF,
+  parameter [31:0] SRAM_SIZE_BYTES     = 32'd230400,
+  parameter [31:0] SRAM_LAST_ADDR      = 32'h0003_83FF,
   parameter [31:0] TEXT_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR      = 32'h000F_FFFF,
-  parameter [31:0] DATA_BASE_ADDR      = 32'h0010_0000,
-  parameter [31:0] DATA_LAST_ADDR      = 32'h001B_FFFF,
-  parameter [31:0] STACK_BASE_ADDR     = 32'h001C_0000,
-  parameter [31:0] STACK_LAST_ADDR     = 32'h001F_FFFF
-)
-(
+  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_7FFF,
+  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_8000,
+  parameter [31:0] DATA_LAST_ADDR      = 32'h0002_7FFF,
+  parameter [31:0] STACK_BASE_ADDR     = 32'h0002_8000,
+  parameter [31:0] STACK_LAST_ADDR     = 32'h0003_83FF,
+  parameter        INIT_FILE           = "",
+  parameter integer CLK_FREQ_HZ        = 100_000_000,
+  parameter integer UART_BAUD          = 115200,
+  parameter [31:0] UART_BASE_ADDR      = 32'h1000_0000,
+  parameter [31:0] UART_LAST_ADDR      = 32'h1000_00FF
+)(
   input                      clk,
   input                      rstn,
+  input                      uart_rx_i,
+  output                     uart_tx_o,
 
   // IF fetch (optional; tie low if unused)
   input                      fetch_valid_i,
@@ -42,59 +46,131 @@ module cache_bridge_mem
   output                     dmem_store_done_o
 );
 
-  // Wires to top_cache_sram
-  wire d_req_valid, d_req_ready, d_req_rw, d_resp_valid, d_resp_err;
-  wire [XLEN-1:0] d_req_addr, d_req_wdata, d_resp_rdata;
-  wire [XLEN/8-1:0] d_req_wstrb;
-  wire d_stall_ld_miss, d_stall_st_buf;
-  wire d_store_done;
+  // ---------------- Cache request wires ----------------
+  wire cache_req_valid;
+  wire cache_req_ready;
+  wire cache_resp_valid;
+  wire cache_resp_err;
+  wire [XLEN-1:0] cache_req_addr;
+  wire [XLEN-1:0] cache_req_wdata;
+  wire [XLEN/8-1:0] cache_req_wstrb;
+  wire [XLEN-1:0] cache_resp_rdata;
+  wire cache_store_done;
+  wire d_stall_ld_miss;
+  wire d_stall_st_buf;
 
-  assign d_req_valid = dmem_req_o;
-  assign d_req_rw    = dmem_we_o;
-  assign d_req_addr  = {dmem_addr_o[31:2], 2'b00}; // word-align
-  assign d_req_wdata = dmem_wdata_o;               // pass-through
-  assign d_req_wstrb = dmem_wstrb_o;               // pass-through
+  wire addr_is_uart = (dmem_addr_o >= UART_BASE_ADDR) && (dmem_addr_o <= UART_LAST_ADDR);
+  wire uart_req     = dmem_req_o & addr_is_uart;
+  wire cache_req    = dmem_req_o & ~addr_is_uart;
 
-  // ---------------- OOR detect (handles zero-latency and >0-latency) ----------------
+  assign cache_req_valid = cache_req;
+  assign cache_req_addr  = {dmem_addr_o[31:2], 2'b00};
+  assign cache_req_wdata = dmem_wdata_o;
+  assign cache_req_wstrb = dmem_wstrb_o;
+
+  // ---------------- UART MMIO ----------------
+  wire        uart_req_ready;
+  wire        uart_resp_valid;
+  wire [31:0] uart_resp_rdata;
+  wire        uart_resp_err;
+  wire        uart_store_done;
+  wire        uart_store_err;
+
+  uart_mmio
+  #(
+    CLK_FREQ_HZ,
+    UART_BAUD
+  )
+  u_uart (
+    clk,
+    rstn,
+    uart_req,
+    dmem_we_o,
+    dmem_addr_o,
+    dmem_wdata_o,
+    dmem_wstrb_o,
+    uart_req_ready,
+    uart_resp_valid,
+    uart_resp_rdata,
+    uart_resp_err,
+    uart_store_done,
+    uart_store_err,
+    uart_rx_i,
+    uart_tx_o
+  );
+
+  wire uart_req_load  = uart_req & ~dmem_we_o;
+  wire uart_req_store = uart_req &  dmem_we_o;
+  wire uart_req_fire  = uart_req & uart_req_ready;
+
+  reg uart_load_pending_q;
+  always @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      uart_load_pending_q <= 1'b0;
+    end else begin
+      if (uart_resp_valid) begin
+        uart_load_pending_q <= 1'b0;
+      end else if (uart_req_fire && ~dmem_we_o) begin
+        uart_load_pending_q <= 1'b1;
+      end
+    end
+  end
+
+  wire uart_resp_path = uart_load_pending_q |
+                        (uart_req_load && uart_req_ready);
+
+  // ---------------- OOR detect (cache path only) ----------------
   wire in_sram_range = (dmem_addr_o >= SRAM_BASE_ADDR) && (dmem_addr_o <= SRAM_LAST_ADDR);
+  wire oor_now       = (cache_req_valid && cache_req_ready) && (~dmem_we_o) && (~in_sram_range);
 
-  // "當拍"接收的越界讀事件（與 handshake 同拍成立）
-  wire oor_now = (d_req_valid && d_req_ready) && (~dmem_we_o) && (~in_sram_range);
-
-  // 撐到回覆拍的 sticky（若不是零延遲）
   reg oor_hold_q;
   always @(posedge clk or negedge rstn) begin
     if (!rstn) begin
       oor_hold_q <= 1'b0;
     end else begin
-      if (oor_now)          oor_hold_q <= 1'b1; // 記下已接收的越界讀
-      else if (d_resp_valid) oor_hold_q <= 1'b0; // 回覆拍清掉
+      if (oor_now) begin
+        oor_hold_q <= 1'b1;
+      end else if (cache_resp_valid) begin
+        oor_hold_q <= 1'b0;
+      end
     end
   end
 
-  // 回覆/握手
-  assign dmem_ready_i  = d_req_ready;
-  assign dmem_rvalid_i = d_resp_valid;
-  assign dmem_rdata_i  = d_resp_rdata;
-  assign dmem_store_done_o = d_store_done;
+  // ---------------- Handshake back to MEM stage ----------------
+  wire cache_path_ready  = cache_req_ready;
+  wire cache_path_rvalid = cache_resp_valid;
+  wire cache_path_err    = cache_resp_err | oor_now | oor_hold_q;
 
-  // 只要是(1)底層回覆錯誤、(2)當拍越界、或(3)之前接收過越界但回覆未到，都算錯
-  assign dmem_err_i    = d_resp_err | oor_now | oor_hold_q;
+  wire uart_store_fire = uart_req_store && uart_req_ready;
+  wire uart_err_value  = (uart_resp_path ? uart_resp_err : 1'b0) |
+                         (uart_store_fire ? uart_store_err : 1'b0);
+  wire uart_err_sel    = uart_resp_path | uart_store_fire;
 
-  // ---------------- Debug prints ----------------
+  assign dmem_ready_i       = uart_req ? uart_req_ready : cache_path_ready;
+  assign dmem_rvalid_i      = uart_resp_path ? uart_resp_valid : cache_path_rvalid;
+  assign dmem_rdata_i       = uart_resp_path ? uart_resp_rdata : cache_resp_rdata;
+  assign dmem_store_done_o  = cache_store_done | uart_store_done;
+  assign dmem_err_i         = uart_err_sel ? uart_err_value : cache_path_err;
+
+`ifndef SYNTHESIS
   always @(posedge clk) begin
-    if (d_req_valid && d_req_ready) begin
+    if (cache_req_valid && cache_req_ready) begin
       $display("[%0t] BRIDGE TXN we=%0d addr=0x%08x wstrb=%b wdata=0x%08x",
-               $time, d_req_rw, d_req_addr, d_req_wstrb, d_req_wdata);
+               $time, dmem_we_o, cache_req_addr, cache_req_wstrb, cache_req_wdata);
     end
-  end
-
-  always @(posedge clk) begin
-    if (d_resp_valid) begin
+    if (uart_req && uart_req_ready) begin
+      $display("[%0t] UART MMIO TXN we=%0d addr=0x%08x data=0x%08x",
+               $time, dmem_we_o, dmem_addr_o, dmem_wdata_o);
+    end
+    if (cache_resp_valid) begin
       $display("[%0t] BRIDGE RSP err_raw=%0d oor_now=%0d oor_hold=%0d dmem_err=%0d",
-               $time, d_resp_err, oor_now, oor_hold_q, (d_resp_err | oor_now | oor_hold_q));
+               $time, cache_resp_err, oor_now, oor_hold_q, cache_path_err);
+    end
+    if (uart_resp_valid) begin
+      $display("[%0t] UART RSP data=0x%08x err=%0d", $time, uart_resp_rdata, uart_resp_err);
     end
   end
+`endif
 
   // ---------------- top_cache_sram ----------------
   top_cache_sram
@@ -112,7 +188,8 @@ module cache_bridge_mem
     DATA_BASE_ADDR,
     DATA_LAST_ADDR,
     STACK_BASE_ADDR,
-    STACK_LAST_ADDR
+    STACK_LAST_ADDR,
+    INIT_FILE
   )
   u_sys (
     clk,
@@ -121,18 +198,18 @@ module cache_bridge_mem
     fetch_addr_i,
     fetch_data_o,
     fetch_stall_o,
-    d_req_valid,
-    d_req_ready,
-    d_req_rw,
-    d_req_addr,
-    d_req_wdata,
-    d_req_wstrb,
-    d_resp_valid,
-    d_resp_rdata,
-    d_resp_err,
+    cache_req_valid,
+    cache_req_ready,
+    dmem_we_o,
+    cache_req_addr,
+    cache_req_wdata,
+    cache_req_wstrb,
+    cache_resp_valid,
+    cache_resp_rdata,
+    cache_resp_err,
     d_stall_ld_miss,
     d_stall_st_buf,
-    d_store_done
+    cache_store_done
   );
 
 endmodule

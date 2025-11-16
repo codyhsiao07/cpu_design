@@ -10,11 +10,11 @@
 module mem_guard
 #(
   parameter [31:0] P_TEXT_BASE = 32'h0000_0000,
-  parameter [31:0] P_TEXT_LAST = 32'h000F_FFFF,
-  parameter [31:0] P_DATA_BASE = 32'h0010_0000,
-  parameter [31:0] P_DATA_LAST = 32'h001B_FFFF,
+  parameter [31:0] P_TEXT_LAST = 32'h0000_7FFF,
+  parameter [31:0] P_DATA_BASE = 32'h0000_8000,
+  parameter [31:0] P_DATA_LAST = 32'h0002_7FFF,
   parameter [31:0] P_SRAM_BASE = 32'h0000_0000,
-  parameter [31:0] P_SRAM_LAST = 32'h001F_FFFF,
+  parameter [31:0] P_SRAM_LAST = 32'h0003_83FF,
   parameter        P_ALLOW_TEXT_WR   = 0, // 1: TEXT can be written; 0: block
   parameter        P_TEXT_WR_ERR     = 0, // 1: raise err on TEXT write attempt
   parameter        P_OOR_READ_ERR    = 1, // 1: raise err on out-of-range read

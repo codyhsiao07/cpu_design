@@ -6,14 +6,19 @@ module tb_mem_full;
   // -------- Clock / Reset --------
   reg clk;
   reg rst_n;
+  reg uart_rx;
+  wire uart_tx;
   initial begin
     clk = 0;
     forever #5 clk = ~clk; // 100MHz
   end
 
+  initial uart_rx = 1'b1;
+
   task do_reset;
     begin
-      rst_n = 0;
+      rst_n  = 0;
+      uart_rx = 1'b1;
       repeat (10) @(posedge clk);
       rst_n = 1;
       repeat (10) @(posedge clk);
@@ -71,7 +76,8 @@ module tb_mem_full;
     DATA_BASE_ADDR,
     DATA_LAST_ADDR,
     STACK_BASE_ADDR,
-    STACK_LAST_ADDR
+    STACK_LAST_ADDR,
+    ""
   )
   u_top (
     clk,
@@ -92,7 +98,9 @@ module tb_mem_full;
     32'h0,
     ifetch_data_dummy,
     ifetch_stall_dummy,
-    1'b0
+    1'b0,
+    uart_rx,
+    uart_tx
   );
 
   // -------- TB helpers --------

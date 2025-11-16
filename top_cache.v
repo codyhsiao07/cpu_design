@@ -12,17 +12,18 @@ module top_cache_sram #(
   parameter integer DCACHE_WAYS        = 2,
   parameter integer DCACHE_WBUF_DEPTH  = 1,
 
-  // SRAM window & partitions (default = 0x0000_0000 .. 0x001F_FFFF, 2 MiB)
+  // SRAM window & partitions (default = 0x0000_0000 .. 0x0003_83FF, 225 KiB)
   parameter [31:0] SRAM_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES     = 32'd2097152,
-  parameter [31:0] SRAM_LAST_ADDR      = 32'h001F_FFFF,
+  parameter [31:0] SRAM_SIZE_BYTES     = 32'd230400,
+  parameter [31:0] SRAM_LAST_ADDR      = 32'h0003_83FF,
 
   parameter [31:0] TEXT_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR      = 32'h000F_FFFF,
-  parameter [31:0] DATA_BASE_ADDR      = 32'h0010_0000,
-  parameter [31:0] DATA_LAST_ADDR      = 32'h001B_FFFF,
-  parameter [31:0] STACK_BASE_ADDR     = 32'h001C_0000,
-  parameter [31:0] STACK_LAST_ADDR     = 32'h001F_FFFF
+  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_7FFF,
+  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_8000,
+  parameter [31:0] DATA_LAST_ADDR      = 32'h0002_7FFF,
+  parameter [31:0] STACK_BASE_ADDR     = 32'h0002_8000,
+  parameter [31:0] STACK_LAST_ADDR     = 32'h0003_83FF,
+  parameter        INIT_FILE           = ""
 )(
   input                      clk,
   input                      rstn,   // active-low
@@ -199,7 +200,8 @@ module top_cache_sram #(
     .DATA_LAST_ADDR   (DATA_LAST_ADDR),
     .STACK_BASE_ADDR  (STACK_BASE_ADDR),
     .STACK_LAST_ADDR  (STACK_LAST_ADDR),
-    .LINE_BYTES       (DCACHE_LINE_BYTES)
+    .LINE_BYTES       (DCACHE_LINE_BYTES),
+    .INIT_FILE        (INIT_FILE)
   ) u_sram (
     .clk                  (clk),
     .rst_n                (rstn),

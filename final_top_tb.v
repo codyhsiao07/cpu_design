@@ -26,18 +26,29 @@ module tb_top_rv32i_inline;
   // ---------------------------------------------------------------------------
   // Minimal writeback taps (as in your original TB)
   // ---------------------------------------------------------------------------
+  reg         uart_rx;
+  wire        uart_tx;
   wire        wb_we;
   wire [4:0]  wb_rd;
   wire [31:0] wb_wdata;
   wire        mem_access_err;
+  wire        uart_req_fire = dut.u_core.u_mem_top.u_cb.u_uart.req_valid_i &
+                              dut.u_core.u_mem_top.u_cb.u_uart.req_we_i &
+                              dut.u_core.u_mem_top.u_cb.u_uart.req_ready_o;
+  wire [7:0]  uart_tx_byte  = dut.u_core.u_mem_top.u_cb.u_uart.req_wdata_i[7:0];
 
   // ---------------------------------------------------------------------------
   // Instantiate DUT (positional only; no named ports)
-  // top_rv32i port order must match: (clk, rst_n, wb_we, wb_rd, wb_wdata, mem_access_err)
+  // top_rv32i port order must match:
+  // (clk, rst_n, uart_rx_i, uart_tx_o, wb_we, wb_rd, wb_wdata, mem_access_err)
   // ---------------------------------------------------------------------------
-  top_rv32i dut (
+  top_rv32i #(
+    .UART_BAUD(5_000_000)
+  ) dut (
     clk,
     rst_n,
+    uart_rx,
+    uart_tx,
     wb_we,
     wb_rd,
     wb_wdata,
@@ -60,6 +71,7 @@ module tb_top_rv32i_inline;
   // Clock generation (exact 100 MHz)
   initial clk = 1'b0;
   always #(CLK_PERIOD_NS/2.0) clk = ~clk;
+  initial uart_rx = 1'b1; // idle high
 
   // Optional VCD (guarded)
 `ifdef DUMP_VCD
@@ -128,6 +140,13 @@ module tb_top_rv32i_inline;
     if (rst_n && wb_we && (wb_rd == 5'd4) && (wb_wdata == 32'h00000011)) begin
       $display("%0t  PROGRAM PASS (rd4=0x00000011)", $time);
       #20 $finish;
+    end
+  end
+
+  // UART MMIO write monitor
+  always @(posedge clk) begin
+    if (rst_n && uart_req_fire) begin
+      $display("%0t  UART TX BYTE = 0x%02h", $time, uart_tx_byte);
     end
   end
 
