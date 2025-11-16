@@ -12,6 +12,7 @@ module basys3_top_tb;
   reg  uart_rx;
   wire uart_tx;
   reg  capturing = 1'b0;
+  reg  uart_tx_q = 1'b1;
   reg [9:0] shift_reg = 10'h3FF;
   reg [7:0] capture_byte = 8'h00;
   reg [3:0] bit_count = 4'd0;
@@ -50,11 +51,6 @@ module basys3_top_tb;
   end
 
   // Coarse UART monitor based on start-bit detection.
-  reg uart_tx_q = 1'b1;
-  reg [3:0] bit_count;
-  reg [7:0] capture_byte;
-  reg       capturing;
-  integer   sample_cnt;
 
   always @(posedge clk_100mhz) begin
     uart_tx_q <= uart_tx;
