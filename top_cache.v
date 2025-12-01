@@ -12,18 +12,19 @@ module top_cache_sram #(
   parameter integer DCACHE_WAYS        = 2,
   parameter integer DCACHE_WBUF_DEPTH  = 1,
 
-  // SRAM window & partitions (default = 0x0000_0000 .. 0x0003_83FF, 225 KiB)
+  // SRAM window & partitions (default FPGA-friendly size = 64 KiB)
   parameter [31:0] SRAM_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES     = 32'd230400,
-  parameter [31:0] SRAM_LAST_ADDR      = 32'h0003_83FF,
+  parameter [31:0] SRAM_SIZE_BYTES     = 32'd65536,
+  parameter [31:0] SRAM_LAST_ADDR      = 32'h0000_FFFF,
 
   parameter [31:0] TEXT_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_7FFF,
-  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_8000,
-  parameter [31:0] DATA_LAST_ADDR      = 32'h0002_7FFF,
-  parameter [31:0] STACK_BASE_ADDR     = 32'h0002_8000,
-  parameter [31:0] STACK_LAST_ADDR     = 32'h0003_83FF,
-  parameter        INIT_FILE           = ""
+  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_3FFF,
+  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_4000,
+  parameter [31:0] DATA_LAST_ADDR      = 32'h0000_BFFF,
+  parameter [31:0] STACK_BASE_ADDR     = 32'h0000_C000,
+  parameter [31:0] STACK_LAST_ADDR     = 32'h0000_FFFF,
+  parameter        INIT_FILE           = "",
+  parameter        USE_FPGA_SRAM       = 1'b1  // 1: use sram_fpga (synth), 0: use sram_2mb
 )(
   input                      clk,
   input                      rstn,   // active-low
@@ -188,8 +189,33 @@ module top_cache_sram #(
   assign d_resp_err   = g_resp_err | guard_err_pulse_q;
 
   // -------------------------
-  // Unified on-chip SRAM (dual-port: I$ comb + D$ line iface)
+  // Unified on-chip SRAM (dual-port)
+  // - Use FPGA-friendly synchronous version in synthesis
   // -------------------------
+  generate
+    if (USE_FPGA_SRAM) begin : gen_fpga_sram
+  sram_fpga #(
+    .SRAM_BASE_ADDR   (SRAM_BASE_ADDR),
+    .SRAM_SIZE_BYTES  (SRAM_SIZE_BYTES),
+    .SRAM_LAST_ADDR   (SRAM_LAST_ADDR),
+    .LINE_BYTES       (DCACHE_LINE_BYTES),
+    .INIT_FILE        (INIT_FILE)
+  ) u_sram (
+    .clk                  (clk),
+    .rst_n                (rstn),
+    .imem_addr_i          (i_mem_addr),
+    .imem_rdata_o         (i_mem_rdata),
+    .dmem_req_i           (m_req_valid),
+    .dmem_ready_o         (m_req_ready),
+    .dmem_we_i            (m_req_write),
+    .dmem_addr_i          (m_req_addr),
+    .dmem_wdata_i         (m_req_wdata),
+    .dmem_wstrb_i         (m_req_wstrb),
+    .dmem_resp_valid_o    (m_resp_valid),
+    .dmem_resp_rdata_o    (m_resp_rdata),
+    .dmem_resp_err_o      (m_resp_err)
+  );
+    end else begin : gen_model_sram
   sram_2mb #(
     .SRAM_BASE_ADDR   (SRAM_BASE_ADDR),
     .SRAM_SIZE_BYTES  (SRAM_SIZE_BYTES),
@@ -205,12 +231,8 @@ module top_cache_sram #(
   ) u_sram (
     .clk                  (clk),
     .rst_n                (rstn),
-
-    // IMEM port (I$)
     .imem_addr_i          (i_mem_addr),
     .imem_rdata_o         (i_mem_rdata),
-
-    // DMEM port (D$)
     .dmem_req_i           (m_req_valid),
     .dmem_ready_o         (m_req_ready),
     .dmem_we_i            (m_req_write),
@@ -221,5 +243,7 @@ module top_cache_sram #(
     .dmem_resp_rdata_o    (m_resp_rdata),
     .dmem_resp_err_o      (m_resp_err)
   );
+    end
+  endgenerate
 
 endmodule

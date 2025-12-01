@@ -8,15 +8,16 @@ module cache_bridge_mem
   parameter integer DCACHE_WAYS        = 2,
   parameter integer DCACHE_WBUF_DEPTH  = 1,
   parameter [31:0] SRAM_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] SRAM_SIZE_BYTES     = 32'd230400,
-  parameter [31:0] SRAM_LAST_ADDR      = 32'h0003_83FF,
+  parameter [31:0] SRAM_SIZE_BYTES     = 32'd65536,
+  parameter [31:0] SRAM_LAST_ADDR      = 32'h0000_FFFF,
   parameter [31:0] TEXT_BASE_ADDR      = 32'h0000_0000,
-  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_7FFF,
-  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_8000,
-  parameter [31:0] DATA_LAST_ADDR      = 32'h0002_7FFF,
-  parameter [31:0] STACK_BASE_ADDR     = 32'h0002_8000,
-  parameter [31:0] STACK_LAST_ADDR     = 32'h0003_83FF,
+  parameter [31:0] TEXT_LAST_ADDR      = 32'h0000_3FFF,
+  parameter [31:0] DATA_BASE_ADDR      = 32'h0000_4000,
+  parameter [31:0] DATA_LAST_ADDR      = 32'h0000_BFFF,
+  parameter [31:0] STACK_BASE_ADDR     = 32'h0000_C000,
+  parameter [31:0] STACK_LAST_ADDR     = 32'h0000_FFFF,
   parameter        INIT_FILE           = "",
+  parameter        USE_FPGA_SRAM       = 1'b1,
   parameter integer CLK_FREQ_HZ        = 100_000_000,
   parameter integer UART_BAUD          = 115200,
   parameter [31:0] UART_BASE_ADDR      = 32'h1000_0000,
@@ -189,7 +190,8 @@ module cache_bridge_mem
     DATA_LAST_ADDR,
     STACK_BASE_ADDR,
     STACK_LAST_ADDR,
-    INIT_FILE
+    INIT_FILE,
+    USE_FPGA_SRAM
   )
   u_sys (
     clk,

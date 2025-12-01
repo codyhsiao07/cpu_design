@@ -36,7 +36,7 @@ module basys3_top #(
   wire        mem_access_err;
 
   top_rv32i #(
-    .SRAM_INIT_FILE(SRAM_INIT_FILE),
+    .SRAM_INIT_FILE("mem_init_example.mem"),
     .CLK_FREQ_HZ   (CI_CLK_FREQ_HZ),
     .UART_BAUD     (CI_UART_BAUD)
   ) u_soc (
