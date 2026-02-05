@@ -180,6 +180,7 @@ module dcache_blocking
     reg [LINE_BITS-1:0]  refill_line_r; //refill 暫存 buffer：整條收滿才 commit，拿來「補入（refill）」的新 line
     reg                  refill_way_r;     // refill 要寫入哪個 way
     reg [TAG_BITS-1:0]    refill_tag_r; // refill 回來的這條 line 要被標成哪個 tag
+    reg                  wb_err_r; // latch WB ack error for pending miss response
     // temps for store-hit merge (declared here for Verilog-2001 compatibility)
     reg [31:0]            old_w;
     reg [31:0]            merged_w;
@@ -317,6 +318,7 @@ module dcache_blocking
             refill_line_r <= {LINE_BITS{1'b0}};//是 refill 暫存 buffer
             refill_way_r  <= 1'b0;
             refill_tag_r  <= {TAG_BITS{1'b0}};
+            wb_err_r      <= 1'b0;
 
             // init meta (optional; for synth you may omit this loop)
             for (i=0; i<SETS; i=i+1) begin
@@ -358,6 +360,7 @@ module dcache_blocking
                         req_tag_r      <= cpu_req_addr[ADDR_W-1:OFFSET_BITS+INDEX_BITS];
                         req_word_r     <= cpu_req_addr[OFFSET_BITS-1:2];
                         req_word_hi_r  <= cpu_req_addr[2];
+                        wb_err_r       <= 1'b0;
                         state <= S_LOOKUP0;
                     end
                 end
@@ -464,7 +467,10 @@ module dcache_blocking
 
                 // wait 1-beat ack (you可依你的L2協議改成不等ack)
                 S_WB_WAIT: begin
-                    if (l2_rsp_valid && l2_rsp_ready) state <= S_REFILL_REQ;
+                    if (l2_rsp_valid && l2_rsp_ready) begin
+                        wb_err_r <= l2_rsp_err;
+                        state <= S_REFILL_REQ;
+                    end
                 end
 
                 // line read request (1 handshake)
@@ -511,7 +517,7 @@ module dcache_blocking
                     lru_mem[index_r] <= (refill_way_r==1'b0) ? 1'b1 : 1'b0;
 
                     cpu_rsp_rdata <= line_get_word32(refill_line_r, req_word_r);
-                    cpu_rsp_err   <= l2_rsp_err;
+                    cpu_rsp_err   <= l2_rsp_err | wb_err_r;
                     cpu_rsp_valid <= 1'b1;
                     state <= S_RESP;
                 end

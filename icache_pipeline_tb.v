@@ -6,9 +6,32 @@ module icache_pipeline_tb;
   localparam ADDR_WIDTH = 32;
   localparam L2_DATA_W  = 64;
   localparam MEM_WORDS  = 256;
+  localparam USE_MIG    = 1;
+  localparam [31:0] RESET_PC = USE_MIG ? 32'h8000_0000 : 32'h0000_0000;
 
   reg                   clk;
   reg                   rst_n;
+  reg                   uart_rx;
+
+  // DDR2 MIG (USE_MIG=1 uses sim model below)
+  wire [15:0]           ddr2_dq;
+  wire [1:0]            ddr2_dqs_n;
+  wire [1:0]            ddr2_dqs_p;
+  wire [13:0]           ddr2_addr;
+  wire [2:0]            ddr2_ba;
+  wire                  ddr2_ras_n;
+  wire                  ddr2_cas_n;
+  wire                  ddr2_we_n;
+  wire [0:0]            ddr2_ck_p;
+  wire [0:0]            ddr2_ck_n;
+  wire [0:0]            ddr2_cke;
+  wire [0:0]            ddr2_cs_n;
+  wire [1:0]            ddr2_dm;
+  wire [0:0]            ddr2_odt;
+  wire                  init_calib_complete;
+  wire                  sys_clk_p;
+  wire                  sys_clk_n;
+  wire                  clk_ref_i;
 
   // I$ L2 interface
   wire                  l2_req_valid;
@@ -45,14 +68,36 @@ module icache_pipeline_tb;
   wire [4:0]            wb_rd;
   wire [31:0]           wb_wdata;
   wire                  ifetch_err;
+  wire                  boot_done;
 
   // DUT
   icache_pipeline_top #(
     .ADDR_WIDTH (ADDR_WIDTH),
-    .L2_DATA_W  (L2_DATA_W)
+    .L2_DATA_W  (L2_DATA_W),
+    .USE_MIG    (USE_MIG),
+    .RESET_PC   (RESET_PC)
   ) dut (
     .clk          (clk),
     .rst_n        (rst_n),
+    .uart_rx_i    (uart_rx),
+    .ddr2_dq      (ddr2_dq),
+    .ddr2_dqs_n   (ddr2_dqs_n),
+    .ddr2_dqs_p   (ddr2_dqs_p),
+    .ddr2_addr    (ddr2_addr),
+    .ddr2_ba      (ddr2_ba),
+    .ddr2_ras_n   (ddr2_ras_n),
+    .ddr2_cas_n   (ddr2_cas_n),
+    .ddr2_we_n    (ddr2_we_n),
+    .ddr2_ck_p    (ddr2_ck_p),
+    .ddr2_ck_n    (ddr2_ck_n),
+    .ddr2_cke     (ddr2_cke),
+    .ddr2_cs_n    (ddr2_cs_n),
+    .ddr2_dm      (ddr2_dm),
+    .ddr2_odt     (ddr2_odt),
+    .sys_clk_p    (sys_clk_p),
+    .sys_clk_n    (sys_clk_n),
+    .clk_ref_i    (clk_ref_i),
+    .init_calib_complete (init_calib_complete),
     .l2_req_valid (l2_req_valid),
     .l2_req_ready (l2_req_ready),
     .l2_req_addr  (l2_req_addr),
@@ -80,11 +125,15 @@ module icache_pipeline_tb;
     .wb_we_o      (wb_we),
     .wb_rd_o      (wb_rd),
     .wb_wdata_o   (wb_wdata),
-    .ifetch_err_o (ifetch_err)
+    .ifetch_err_o (ifetch_err),
+    .boot_done_o  (boot_done)
   );
 
   // Clock
   always #5 clk = ~clk;
+  assign sys_clk_p = clk;
+  assign sys_clk_n = ~clk;
+  assign clk_ref_i = clk;
 
   // Shared memory for I$/D$
   reg [31:0] mem [0:MEM_WORDS-1];
@@ -159,6 +208,7 @@ module icache_pipeline_tb;
       end
     end
   endtask
+
 
   function [63:0] make_beat;
     input [31:0] base;
@@ -397,7 +447,7 @@ module icache_pipeline_tb;
     if (!$value$plusargs("TEST=%d", test_id))
       test_id = 0;
 
-    memfile = "mem_init_example.mem";
+    memfile = "program_ddr.mem";
     expect_rd = 5'd4;
     expect_val = 32'h00000011;
     require_linefill = 1'b1;
@@ -409,93 +459,93 @@ module icache_pipeline_tb;
 
     case (test_id)
       1: begin
-        memfile = "mem_test1_alu_fwd.mem";
+        memfile = "TEST_FILES/mem_test1_alu_fwd.mem";
         expect_rd = 5'd3;
         expect_val = 32'h00000004;
         require_linefill = 1'b0;
       end
       2: begin
-        memfile = "mem_test2_load_use.mem";
+        memfile = "TEST_FILES/mem_test2_load_use.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000012;
         require_linefill = 1'b0;
       end
       3: begin
-        memfile = "mem_test3_store_dep.mem";
+        memfile = "TEST_FILES/mem_test3_store_dep.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000005;
         require_linefill = 1'b0;
       end
       4: begin
-        memfile = "mem_test4_branch_taken.mem";
+        memfile = "TEST_FILES/mem_test4_branch_taken.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000002;
         require_linefill = 1'b0;
       end
       5: begin
-        memfile = "mem_test5_load_store.mem";
+        memfile = "TEST_FILES/mem_test5_load_store.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000009;
         require_linefill = 1'b0;
       end
       6: begin
-        memfile = "mem_test6_branch_not_taken.mem";
+        memfile = "TEST_FILES/mem_test6_branch_not_taken.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000002;
         require_linefill = 1'b0;
       end
       7: begin
-        memfile = "mem_test7_jal.mem";
+        memfile = "TEST_FILES/mem_test7_jal.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000004;
         require_linefill = 1'b0;
       end
       8: begin
-        memfile = "mem_test8_jalr.mem";
+        memfile = "TEST_FILES/mem_test8_jalr.mem";
         expect_rd = 5'd2;
         expect_val = 32'h00000004;
         require_linefill = 1'b0;
       end
       9: begin
-        memfile = "mem_test9_lb_sb.mem";
+        memfile = "TEST_FILES/mem_test9_lb_sb.mem";
         expect_rd = 5'd2;
         expect_val = 32'hFFFFFF80;
         require_linefill = 1'b0;
       end
       10: begin
-        memfile = "mem_test10_lhu_sh.mem";
+        memfile = "TEST_FILES/mem_test10_lhu_sh.mem";
         expect_rd = 5'd2;
         expect_val = 32'h000000F0;
         require_linefill = 1'b0;
       end
       11: begin
-        memfile = "mem_test11_long_mix.mem";
+        memfile = "TEST_FILES/mem_test11_long_mix.mem";
         expect_rd = 5'd8;
         expect_val = 32'h0000001B;
         require_linefill = 1'b0;
       end
       12: begin
-        memfile = "mem_test12_long_mem.mem";
+        memfile = "TEST_FILES/mem_test12_long_mem.mem";
         expect_rd = 5'd10;
         expect_val = 32'h00000103;
         require_linefill = 1'b0;
       end
       13: begin
-        memfile = "mem_test13_stress.mem";
+        memfile = "TEST_FILES/mem_test13_stress.mem";
         expect_rd = 5'd8;
-        expect_val = 32'h000009AE;
+        expect_val = 32'h2D064C9E;
         require_linefill = 1'b0;
         max_cycles = 20000;
       end
       14: begin
-        memfile = "mem_test14_id_miss.mem";
+        memfile = "TEST_FILES/mem_test14_id_miss.mem";
         expect_rd = 5'd8;
         expect_val = 32'h0002FFF4;
         require_linefill = 1'b0;
         max_cycles = 20000;
       end
       15: begin
-        memfile = "mem_test1_alu_fwd.mem";
+        memfile = "TEST_FILES/mem_test1_alu_fwd.mem";
         i_err_once = 1'b1;
         expect_rd = 5'd0;
         expect_val = 32'h00000000;
@@ -503,12 +553,47 @@ module icache_pipeline_tb;
         max_cycles = 2000;
       end
       16: begin
-        memfile = "mem_test5_load_store.mem";
+        memfile = "TEST_FILES/mem_test5_load_store.mem";
         d_err_once = 1'b1;
         expect_rd = 5'd0;
         expect_val = 32'h00000000;
         require_linefill = 1'b0;
         max_cycles = 4000;
+      end
+      17: begin
+        memfile = "TEST_FILES/mem_test17_icache_stress.mem";
+        expect_rd = 5'd4;
+        expect_val = 32'h00000011;
+        require_linefill = 1'b1;
+        max_cycles = 8000;
+      end
+      18: begin
+        memfile = "TEST_FILES/mem_test18_dcache_wb.mem";
+        expect_rd = 5'd8;
+        expect_val = 32'h00000011;
+        require_linefill = 1'b0;
+        max_cycles = 8000;
+      end
+      19: begin
+        memfile = "TEST_FILES/mem_test19_hazard_branch.mem";
+        expect_rd = 5'd6;
+        expect_val = 32'h000000CC;
+        require_linefill = 1'b0;
+        max_cycles = 4000;
+      end
+      20: begin
+        memfile = "TEST_FILES/mem_test20_long_mix.mem";
+        expect_rd = 5'd8;
+        expect_val = 32'h0000005A;
+        require_linefill = 1'b0;
+        max_cycles = 50000;
+      end
+      21: begin
+        memfile = "TEST_FILES/mem_test21_long_branch.mem";
+        expect_rd = 5'd8;
+        expect_val = 32'h0000005A;
+        require_linefill = 1'b0;
+        max_cycles = 200000;
       end
       default: begin
       end
@@ -540,6 +625,7 @@ module icache_pipeline_tb;
 
     clk  = 1'b0;
     rst_n = 1'b0;
+    uart_rx = 1'b1;
     l2_rsp_valid = 1'b0;
     l2_rsp_data  = 64'b0;
     l2_rsp_last  = 1'b0;
@@ -596,6 +682,201 @@ module icache_pipeline_tb;
         $display("PASS: test %0d expect x%0d = 0x%08x", test_id, expect_rd, expect_val);
         $finish;
       end
+    end
+  end
+
+endmodule
+
+// ----------------------------------------------------------------------------
+// Simplified MIG model for simulation (used by MIG_DDR2_interface.v wrapper).
+// - app_addr is 16-byte aligned address (addr[31:4])
+// - app_cmd: 3'b001 read, 3'b000 write
+// - app_wdf_mask: 1=mask (no write), 0=write
+// - Fixed 2-cycle read latency, always-ready interface
+// ----------------------------------------------------------------------------
+module mig_7series_0_mig (
+  output [13:0]                       ddr2_addr,
+  output [2:0]                        ddr2_ba,
+  output                              ddr2_cas_n,
+  output [0:0]                        ddr2_ck_n,
+  output [0:0]                        ddr2_ck_p,
+  output [0:0]                        ddr2_cke,
+  output                              ddr2_ras_n,
+  output                              ddr2_we_n,
+  inout  [15:0]                       ddr2_dq,
+  inout  [1:0]                        ddr2_dqs_n,
+  inout  [1:0]                        ddr2_dqs_p,
+  output                              init_calib_complete,
+  output [0:0]                        ddr2_cs_n,
+  output [1:0]                        ddr2_dm,
+  output [0:0]                        ddr2_odt,
+  input  [27:0]                       app_addr,
+  input  [2:0]                        app_cmd,
+  input                               app_en,
+  input  [127:0]                      app_wdf_data,
+  input                               app_wdf_end,
+  input                               app_wdf_wren,
+  output reg [127:0]                  app_rd_data,
+  output reg                          app_rd_data_end,
+  output reg                          app_rd_data_valid,
+  output reg                          app_rdy,
+  output reg                          app_wdf_rdy,
+  input                               app_sr_req,
+  input                               app_ref_req,
+  input                               app_zq_req,
+  output reg                          app_sr_active,
+  output reg                          app_ref_ack,
+  output reg                          app_zq_ack,
+  output                              ui_clk,
+  output reg                          ui_clk_sync_rst,
+  input  [15:0]                       app_wdf_mask,
+  input                               sys_clk_p,
+  input                               sys_clk_n,
+  input                               clk_ref_i,
+  input                               sys_rst
+);
+  localparam integer MEM_BYTES = 1<<20;
+  localparam integer MEM_WORDS = MEM_BYTES/4;
+  localparam [2:0] CMD_READ  = 3'b001;
+  localparam [2:0] CMD_WRITE = 3'b000;
+
+  reg [7:0] mem_b [0:MEM_BYTES-1];
+  reg [31:0] init_mem [0:MEM_WORDS-1];
+  reg [8*256-1:0] memfile;
+  integer wi;
+  integer test_id_mig;
+
+  // DDR2 pins are unused in this model
+  assign ddr2_addr = 14'd0;
+  assign ddr2_ba   = 3'd0;
+  assign ddr2_cas_n = 1'b1;
+  assign ddr2_ck_n  = 1'b0;
+  assign ddr2_ck_p  = 1'b0;
+  assign ddr2_cke   = 1'b0;
+  assign ddr2_ras_n = 1'b1;
+  assign ddr2_we_n  = 1'b1;
+  assign ddr2_cs_n  = 1'b1;
+  assign ddr2_dm    = 2'b00;
+  assign ddr2_odt   = 1'b0;
+  assign ddr2_dq    = 16'hzzzz;
+  assign ddr2_dqs_n = 2'bzz;
+  assign ddr2_dqs_p = 2'bzz;
+
+  // Use sys_clk_p as UI clock
+  assign ui_clk = sys_clk_p;
+  assign init_calib_complete = ~sys_rst;
+
+  initial begin
+    memfile = "program_ddr.mem";
+    if ($value$plusargs("MEMFILE=%s", memfile)) begin
+      // override
+    end else begin
+      test_id_mig = 0;
+      if ($value$plusargs("TEST=%d", test_id_mig)) begin
+        case (test_id_mig)
+          1:  memfile = "TEST_FILES/mem_test1_alu_fwd.mem";
+          2:  memfile = "TEST_FILES/mem_test2_load_use.mem";
+          3:  memfile = "TEST_FILES/mem_test3_store_dep.mem";
+          4:  memfile = "TEST_FILES/mem_test4_branch_taken.mem";
+          5:  memfile = "TEST_FILES/mem_test5_load_store.mem";
+          6:  memfile = "TEST_FILES/mem_test6_branch_not_taken.mem";
+          7:  memfile = "TEST_FILES/mem_test7_jal.mem";
+          8:  memfile = "TEST_FILES/mem_test8_jalr.mem";
+          9:  memfile = "TEST_FILES/mem_test9_lb_sb.mem";
+          10: memfile = "TEST_FILES/mem_test10_lhu_sh.mem";
+          11: memfile = "TEST_FILES/mem_test11_long_mix.mem";
+          12: memfile = "TEST_FILES/mem_test12_long_mem.mem";
+          13: memfile = "TEST_FILES/mem_test13_stress.mem";
+          14: memfile = "TEST_FILES/mem_test14_id_miss.mem";
+          15: memfile = "TEST_FILES/mem_test1_alu_fwd.mem";
+          16: memfile = "TEST_FILES/mem_test5_load_store.mem";
+          17: memfile = "TEST_FILES/mem_test17_icache_stress.mem";
+          18: memfile = "TEST_FILES/mem_test18_dcache_wb.mem";
+          19: memfile = "TEST_FILES/mem_test19_hazard_branch.mem";
+          20: memfile = "TEST_FILES/mem_test20_long_mix.mem";
+          21: memfile = "TEST_FILES/mem_test21_long_branch.mem";
+          default: memfile = "program_ddr.mem";
+        endcase
+      end
+    end
+    for (wi = 0; wi < MEM_WORDS; wi = wi + 1)
+      init_mem[wi] = 32'h00000013;
+    $readmemh(memfile, init_mem);
+    for (wi = 0; wi < MEM_WORDS; wi = wi + 1) begin
+      mem_b[wi*4 + 0] = init_mem[wi][7:0];
+      mem_b[wi*4 + 1] = init_mem[wi][15:8];
+      mem_b[wi*4 + 2] = init_mem[wi][23:16];
+      mem_b[wi*4 + 3] = init_mem[wi][31:24];
+    end
+  end
+
+  function [127:0] rd128;
+    input [27:0] a16;
+    integer i;
+    reg [31:0] base;
+    begin
+      base = {a16, 4'b0};
+      for (i = 0; i < 16; i = i + 1)
+        rd128[i*8 +: 8] = mem_b[base + i];
+    end
+  endfunction
+
+  task wr128;
+    input [27:0] a16;
+    input [127:0] data;
+    input [15:0] mask;
+    integer i;
+    reg [31:0] base;
+    begin
+      base = {a16, 4'b0};
+      for (i = 0; i < 16; i = i + 1) begin
+        if (!mask[i])
+          mem_b[base + i] = data[i*8 +: 8];
+      end
+    end
+  endtask
+
+  reg [27:0] rd_addr_d0, rd_addr_d1;
+  reg        rd_valid_d0, rd_valid_d1;
+
+  always @(posedge ui_clk or posedge sys_rst) begin
+    if (sys_rst) begin
+      app_rdy          <= 1'b0;
+      app_wdf_rdy      <= 1'b0;
+      app_rd_data_valid<= 1'b0;
+      app_rd_data_end  <= 1'b0;
+      app_rd_data      <= 128'd0;
+      rd_valid_d0      <= 1'b0;
+      rd_valid_d1      <= 1'b0;
+      rd_addr_d0       <= 28'd0;
+      rd_addr_d1       <= 28'd0;
+      app_sr_active    <= 1'b0;
+      app_ref_ack      <= 1'b0;
+      app_zq_ack       <= 1'b0;
+      ui_clk_sync_rst  <= 1'b1;
+    end else begin
+      app_rdy         <= 1'b1;
+      app_wdf_rdy     <= 1'b1;
+      app_sr_active   <= 1'b0;
+      app_ref_ack     <= 1'b0;
+      app_zq_ack      <= 1'b0;
+      ui_clk_sync_rst <= 1'b0;
+
+      // Accept writes
+      if (app_en && app_rdy && (app_cmd == CMD_WRITE) && app_wdf_wren && app_wdf_rdy) begin
+        wr128(app_addr, app_wdf_data, app_wdf_mask);
+      end
+
+      // Pipeline reads (2-cycle latency)
+      rd_valid_d0 <= app_en && app_rdy && (app_cmd == CMD_READ);
+      rd_addr_d0  <= app_addr;
+      rd_valid_d1 <= rd_valid_d0;
+      rd_addr_d1  <= rd_addr_d0;
+
+      app_rd_data_valid <= rd_valid_d1;
+      app_rd_data_end   <= rd_valid_d1;
+      if (rd_valid_d1)
+        app_rd_data <= rd128(rd_addr_d1);
     end
   end
 
