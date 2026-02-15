@@ -60,6 +60,11 @@ module mem_wb(
     if (i_flush) begin
       valid_d  = 1'b0;
       rd_wen_d = 1'b0;
+    end else if (i_stall) begin
+      // WB has no ready/valid backpressure. Keeping valid high during stalls
+      // replays the same write every cycle, so drop to a one-cycle pulse.
+      valid_d  = 1'b0;
+      rd_wen_d = 1'b0;
     end else if (!i_stall) begin
       // Upstream guarantees i_valid is a single-cycle pulse
 

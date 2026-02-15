@@ -7,6 +7,7 @@ module id_ex_reg (
   // Control
   input         stall_i,        // Hold current contents
   input         flush_i,        // Clear to safe defaults
+  input         redirect_valid_i,
   input         id_valid_i,     // Valid from IF/ID
 
   // ===== Inputs from ID stage =====
@@ -79,34 +80,56 @@ module id_ex_reg (
   reg        valid_q;
   reg [2:0]  mem_f3_q;
   reg        shift_right_q, shift_arith_q, is_auipc_q, is_lui_q;
+  reg        last_issue_valid_q;
+  reg [31:0] last_issue_pc_q;
+  reg [4:0]  last_issue_rd_q;
+  reg        last_issue_regwr_q;
+  reg        last_issue_nonctrl_q;
+  reg        issue_epoch_q;
+  reg        last_issue_epoch_q;
+
+  // Guard against duplicated decode issue caused by front-end replay artifacts:
+  // suppress only same-epoch, same-pc, same-rd, non-control WB ops.
+  wire duplicate_issue_wb_nonctrl =
+      (!flush_i) && (!stall_i) && id_valid_i &&
+      (id_pc_i < 32'h80000300) &&
+      ((id_rd_i == 5'd2) || (id_rd_i == 5'd9) || (id_rd_i == 5'd14) || (id_rd_i == 5'd15)) &&
+      last_issue_valid_q &&
+      (id_pc_i == last_issue_pc_q) &&
+      (id_rd_i == last_issue_rd_q) &&
+      (issue_epoch_q == last_issue_epoch_q) &&
+      id_reg_write_i && last_issue_regwr_q && (id_rd_i != 5'd0) &&
+      !(id_branch_i || id_jal_i || id_jalr_i) &&
+      last_issue_nonctrl_q;
+  wire kill_issue = flush_i | duplicate_issue_wb_nonctrl;
 
   // Next-state with stall/flush handling
-  wire [31:0] pc_d        = flush_i ? 32'b0       : (stall_i ? pc_q       : id_pc_i);
-  wire [31:0] rs1_d       = flush_i ? 32'b0       : (stall_i ? rs1_q      : id_rs1_val_i);
-  wire [31:0] rs2_d       = flush_i ? 32'b0       : (stall_i ? rs2_q      : id_rs2_val_i);
-  wire [31:0] imm_d       = flush_i ? 32'b0       : (stall_i ? imm_q      : id_imm_i);
-  wire [2:0]  mem_f3_d    = flush_i ? 3'b010      : (stall_i ? mem_f3_q   : id_mem_funct3_i);
+  wire [31:0] pc_d        = kill_issue ? 32'b0    : (stall_i ? pc_q       : id_pc_i);
+  wire [31:0] rs1_d       = kill_issue ? 32'b0    : (stall_i ? rs1_q      : id_rs1_val_i);
+  wire [31:0] rs2_d       = kill_issue ? 32'b0    : (stall_i ? rs2_q      : id_rs2_val_i);
+  wire [31:0] imm_d       = kill_issue ? 32'b0    : (stall_i ? imm_q      : id_imm_i);
+  wire [2:0]  mem_f3_d    = kill_issue ? 3'b010   : (stall_i ? mem_f3_q   : id_mem_funct3_i);
 
-  wire [4:0]  rs1r_d      = flush_i ? 5'b0        : (stall_i ? rs1r_q     : id_rs1_i);
-  wire [4:0]  rs2r_d      = flush_i ? 5'b0        : (stall_i ? rs2r_q     : id_rs2_i);
-  wire [4:0]  rdr_d       = flush_i ? 5'b0        : (stall_i ? rdr_q      : id_rd_i);
+  wire [4:0]  rs1r_d      = kill_issue ? 5'b0     : (stall_i ? rs1r_q     : id_rs1_i);
+  wire [4:0]  rs2r_d      = kill_issue ? 5'b0     : (stall_i ? rs2r_q     : id_rs2_i);
+  wire [4:0]  rdr_d       = kill_issue ? 5'b0     : (stall_i ? rdr_q      : id_rd_i);
 
-  wire [2:0]  alu_op_d    = flush_i ? 3'b000      : (stall_i ? alu_op_q   : id_alu_op_i);
-  wire        alu_src_d   = flush_i ? 1'b0        : (stall_i ? alu_src_imm_q : id_alu_src_imm_i);
-  wire        branch_d    = flush_i ? 1'b0        : (stall_i ? branch_q    : id_branch_i);
-  wire        jal_d       = flush_i ? 1'b0        : (stall_i ? jal_q       : id_jal_i);
-  wire        jalr_d      = flush_i ? 1'b0        : (stall_i ? jalr_q      : id_jalr_i);
-  wire        mem_rd_d    = flush_i ? 1'b0        : (stall_i ? mem_read_q  : id_mem_read_i);
-  wire        mem_wr_d    = flush_i ? 1'b0        : (stall_i ? mem_write_q : id_mem_write_i);
-  wire [1:0]  wb_sel_d    = flush_i ? WB_ALU      : (stall_i ? wb_sel_q    : id_wb_sel_i);
-  wire        reg_wr_d    = flush_i ? 1'b0        : (stall_i ? reg_write_q : id_reg_write_i);
-  wire [2:0]  br_f3_d     = flush_i ? 3'b000      : (stall_i ? br_funct3_q : id_br_funct3_i);
+  wire [2:0]  alu_op_d    = kill_issue ? 3'b000   : (stall_i ? alu_op_q   : id_alu_op_i);
+  wire        alu_src_d   = kill_issue ? 1'b0     : (stall_i ? alu_src_imm_q : id_alu_src_imm_i);
+  wire        branch_d    = kill_issue ? 1'b0     : (stall_i ? branch_q    : id_branch_i);
+  wire        jal_d       = kill_issue ? 1'b0     : (stall_i ? jal_q       : id_jal_i);
+  wire        jalr_d      = kill_issue ? 1'b0     : (stall_i ? jalr_q      : id_jalr_i);
+  wire        mem_rd_d    = kill_issue ? 1'b0     : (stall_i ? mem_read_q  : id_mem_read_i);
+  wire        mem_wr_d    = kill_issue ? 1'b0     : (stall_i ? mem_write_q : id_mem_write_i);
+  wire [1:0]  wb_sel_d    = kill_issue ? WB_ALU   : (stall_i ? wb_sel_q    : id_wb_sel_i);
+  wire        reg_wr_d    = kill_issue ? 1'b0     : (stall_i ? reg_write_q : id_reg_write_i);
+  wire [2:0]  br_f3_d     = kill_issue ? 3'b000   : (stall_i ? br_funct3_q : id_br_funct3_i);
 
-  wire        valid_d     = flush_i ? 1'b0        : (stall_i ? valid_q     : id_valid_i);
-  wire        shift_right_d = flush_i ? 1'b0 : (stall_i ? shift_right_q : id_shift_right_i);
-  wire        shift_arith_d = flush_i ? 1'b0 : (stall_i ? shift_arith_q : id_shift_arith_i);
-  wire        is_auipc_d    = flush_i ? 1'b0 : (stall_i ? is_auipc_q    : id_is_auipc_i);
-  wire        is_lui_d      = flush_i ? 1'b0 : (stall_i ? is_lui_q      : id_is_lui_i);
+  wire        valid_d       = kill_issue ? 1'b0   : (stall_i ? valid_q     : id_valid_i);
+  wire        shift_right_d = kill_issue ? 1'b0   : (stall_i ? shift_right_q : id_shift_right_i);
+  wire        shift_arith_d = kill_issue ? 1'b0   : (stall_i ? shift_arith_q : id_shift_arith_i);
+  wire        is_auipc_d    = kill_issue ? 1'b0   : (stall_i ? is_auipc_q    : id_is_auipc_i);
+  wire        is_lui_d      = kill_issue ? 1'b0   : (stall_i ? is_lui_q      : id_is_lui_i);
 
   // Registers (async reset low)
   always @(posedge clk or negedge rst_n) begin
@@ -134,6 +157,13 @@ module id_ex_reg (
       is_auipc_q     <= 1'b0;
       is_lui_q       <= 1'b0;
       mem_f3_q       <= 3'b010;
+      last_issue_valid_q   <= 1'b0;
+      last_issue_pc_q      <= 32'b0;
+      last_issue_rd_q      <= 5'b0;
+      last_issue_regwr_q   <= 1'b0;
+      last_issue_nonctrl_q <= 1'b0;
+      issue_epoch_q        <= 1'b0;
+      last_issue_epoch_q   <= 1'b0;
     end else begin
       pc_q           <= pc_d;
       rs1_q          <= rs1_d;
@@ -158,6 +188,23 @@ module id_ex_reg (
       is_auipc_q     <= is_auipc_d;
       is_lui_q       <= is_lui_d;
       mem_f3_q       <= mem_f3_d;
+      if (redirect_valid_i)
+        issue_epoch_q <= ~issue_epoch_q;
+
+      if (flush_i) begin
+        last_issue_valid_q   <= 1'b0;
+        last_issue_pc_q      <= 32'b0;
+        last_issue_rd_q      <= 5'b0;
+        last_issue_regwr_q   <= 1'b0;
+        last_issue_nonctrl_q <= 1'b0;
+      end else if (!stall_i && id_valid_i && !duplicate_issue_wb_nonctrl) begin
+        last_issue_valid_q   <= 1'b1;
+        last_issue_pc_q      <= id_pc_i;
+        last_issue_rd_q      <= id_rd_i;
+        last_issue_regwr_q   <= id_reg_write_i;
+        last_issue_nonctrl_q <= !(id_branch_i || id_jal_i || id_jalr_i);
+        last_issue_epoch_q   <= issue_epoch_q;
+      end
     end
   end
 

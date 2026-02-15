@@ -43,6 +43,7 @@ module id_stage (
   input  [31:0] id_pc_i,
   input  [31:0] id_instr_i,
   input         id_valid_i,
+  input         id_stall_i,
 
   // From WB stage (writeback to regfile)
   input         wb_we_i,
@@ -268,7 +269,7 @@ module id_stage (
   end
 
   // Pass-through ready (simple pipeline)
-  assign id_ready_o = id_valid_i;
+  assign id_ready_o = id_valid_i & ~id_stall_i;
 
   // Immediate output
   assign imm_o = imm;

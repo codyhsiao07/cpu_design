@@ -1,13 +1,13 @@
-module i_cache
+﻿module i_cache
 #(
     parameter ADDR_WIDTH  = 32,
-    parameter CACHE_BYTES = 65536,// 64KB
-    parameter LINE_BYTES  = 64,   // 64B
+    parameter CACHE_BYTES = 65536,
+    parameter LINE_BYTES  = 64,
     parameter NUM_WAYS    = 2,
-    parameter OFFSET_BITS = 6,      // log2(64B)
-    parameter INDEX_BITS  = 9,      // 512 sets -> 9 bits
+    parameter OFFSET_BITS = 6,
+    parameter INDEX_BITS  = 9,
     parameter TAG_BITS    = (ADDR_WIDTH - OFFSET_BITS - INDEX_BITS),
-    parameter L2_DATA_W   = 64,     // default: 64-bit beats
+    parameter L2_DATA_W   = 64,
     parameter UNC_BASE    = 32'h0000_0000,
     parameter UNC_MASK    = 32'h0000_0000
 )
@@ -15,43 +15,37 @@ module i_cache
     input                       clk,
     input                       rst_n,
 
-    input                       if_req_valid, //MEM request valid
-    input  [ADDR_WIDTH-1:0]     if_req_addr, //request address pc
-    output                      if_req_ready,   // 是否icache需要接收指令，如果valid=1 但 ready=0，一樣不接收新的request
-    input                       if_req_kill,    //清除正在pipeline的指令只有2條或以上，非flush 全部
+    input                       if_req_valid,
+    input  [ADDR_WIDTH-1:0]     if_req_addr,
+    output                      if_req_ready,
+    input                       if_req_kill,
 
-    output reg                  if_resp_valid,  //我要回傳指令給decoder
-    input                       if_resp_ready,  //decoder 是否可以接收指令
-    output reg [31:0]           if_resp_inst,   //回傳指令
-    output reg [ADDR_WIDTH-1:0] if_resp_pc,     //回傳pc
-    output reg                  if_resp_err,    //回傳錯誤
+    output reg                  if_resp_valid,
+    input                       if_resp_ready,
+    output reg [31:0]           if_resp_inst,
+    output reg [ADDR_WIDTH-1:0] if_resp_pc,
+    output reg                  if_resp_err,
 
-    input                       ic_flush_req,// flush cache中全部指令
-    output reg                  ic_flush_ack,//flush 已完成
-    input                       ic_inv_valid,//指定需要flush的部分，不是全部flush
-    input                       ic_inv_all,// 1：代表 flush-all , 0: 單一目標
-    input  [INDEX_BITS-1:0]     ic_inv_index,// 指定 index
-    input                       ic_inv_way,//指定 way
-    output reg                  ic_inv_ack,// flush 完成
+    input                       ic_flush_req,
+    output reg                  ic_flush_ack,
+    input                       ic_inv_valid,
+    input                       ic_inv_all,
+    input  [INDEX_BITS-1:0]     ic_inv_index,
+    input                       ic_inv_way,
+    output reg                  ic_inv_ack,
 
-    output reg                  l2_req_valid,//確認是否要傳送指令
-    input                       l2_req_ready,//l2 是否可以接收指令
-    output reg [ADDR_WIDTH-1:0] l2_req_addr,// 傳送地址
-    output reg [1:0]            l2_req_cmd,// 00=LINE_FILL, 01=UC_READ 取一個指令 word（通常 4B）
-    output reg [2:0]            l2_req_size,// log2(bytes/beat) 是指我需要的找的指令再l2的大小 
-    //如果 L2_DATA_W = 64-bit → 一拍回 8 bytes→ bytes_per_beat = 8 → l2_req_size = log2(8) = 3（3'b011)    
-    //如果 L2_DATA_W = 32-bit → 一拍回 4 bytes→ l2_req_size = 2（3'b010）
-    output reg [7:0]            l2_req_len,// beats-1 是指我要回傳幾個beat才可以回傳完
+    output reg                  l2_req_valid,
+    input                       l2_req_ready,
+    output reg [ADDR_WIDTH-1:0] l2_req_addr,
+    output reg [1:0]            l2_req_cmd,
+    output reg [2:0]            l2_req_size,
+    output reg [7:0]            l2_req_len,
 
-    input                       l2_rsp_valid,// L2 表示「這一拍有回來一個 beat 的資料」
-    output reg                  l2_rsp_ready,// 我這一拍是否準備好接 response beat
-    input  [L2_DATA_W-1:0]      l2_rsp_data,// 回來的資料 beat，寬度 = L2_DATA_W 
-    //如果是LINE_FILL : 不是一次回 64B，而是分 8 拍回完， 每拍8B
-    //如果是UC_READ : 那一拍回來是 8 bytes，你會用其中的 4 bytes 當指令
-    input                       l2_rsp_last,//表示 這個 beat 是該次 burst 的最後一拍。
-    //LINE_FILL：第 8 個 beat（或第 16 個 beat）時 last=1
-    //UC_READ：通常第一拍就 last=1
-    input                       l2_rsp_err//表示這筆讀取有錯
+    input                       l2_rsp_valid,
+    output reg                  l2_rsp_ready,
+    input  [L2_DATA_W-1:0]      l2_rsp_data,
+    input                       l2_rsp_last,
+    input                       l2_rsp_err
 );
 
     // ----------------------------
@@ -79,12 +73,11 @@ module i_cache
     // ----------------------------
     wire is_uncached_req;
     assign is_uncached_req = (((if_req_addr & UNC_MASK) == (UNC_BASE & UNC_MASK)) && (UNC_MASK != 0));
-    // UNC_BASE & UNC_MASK 代表取出兩著相同的高位，因為只要高位相同，低位就一定落在此範圍內
-    // 然後再和if_req_addr & UNC_MASK看看兩個相同的高位是否相同，如果相同代表落在MASK範圍內
+    // UNC_BASE & UNC_MASK 隞?”??抵??詨???雿???芾?擃??詨?嚗?雿停銝摰?冽迨蝭???    // ?嗅???if_req_addr & UNC_MASK???拙??擃??臬?詨?嚗???誨銵刻?決ASK蝭???    // ----------------------------
     // Kill toggle (drop in-flight response but do NOT cancel refill)
     // ----------------------------
-    reg kill_prev; //記住「上一拍的 if_req_kill 是 0 還是 1」
-    reg [7:0] kill_toggle;//如果出現if_req_kill就會翻轉
+    reg kill_prev;
+    reg kill_toggle;
 
     // ----------------------------
     // IF1/IF2 pipeline registers
@@ -92,12 +85,12 @@ module i_cache
     reg                  s1_valid;
     reg [ADDR_WIDTH-1:0]  s1_pc;
     reg                  s1_uncached;
-    reg [7:0]            s1_kill_tag;
+    reg                  s1_kill_tag;
 
     reg                  s2_valid;
     reg [ADDR_WIDTH-1:0]  s2_pc;
     reg                  s2_uncached;
-    reg [7:0]            s2_kill_tag;
+    reg                  s2_kill_tag;
 
     reg [TAG_BITS-1:0]   s2_tag0, s2_tag1;
     reg                  s2_v0, s2_v1;
@@ -114,8 +107,7 @@ module i_cache
     assign s2_index   = s2_pc[OFFSET_BITS+INDEX_BITS-1:OFFSET_BITS];
     assign s2_req_tag = s2_pc[ADDR_WIDTH-1:OFFSET_BITS+INDEX_BITS];
     assign s2_word_sel = s2_pc[OFFSET_BITS-1:2];  // [5:2]
-    //PC[1:0]：byte in word（對 32-bit 指令通常固定為 00，代表 4-byte 對齊）
-    //PC[5:2]：word index（0~15）
+    //PC[1:0]嚗yte in word嚗? 32-bit ?誘?虜?箏???00嚗誨銵?4-byte 撠?嚗?    //PC[5:2]嚗ord index嚗?~15嚗?    // ----------------------------
     // Word picker: 512b line -> 32b word (Verilog-2001 safe)
     // ----------------------------
     function [31:0] pick_word32;
@@ -151,9 +143,10 @@ module i_cache
     assign hit0 = s2_valid && s2_v0 && (s2_tag0 == s2_req_tag);
     assign hit1 = s2_valid && s2_v1 && (s2_tag1 == s2_req_tag);
     assign hit  = hit0 || hit1;
+
     wire drop_resp;
     assign drop_resp = (s2_kill_tag != kill_toggle); // kill happened after accept 
-   //這筆 S2 的 request 是在「舊 epoch」被接受的；若之後發生過 kill（epoch 改變），就把它的 response 丟掉，避免舊路徑指令送進 decode。
+    //?? S2 ??request ?臬?? epoch?◤?亙????乩?敺?? kill嚗poch ?寡?嚗?撠望?摰? response 銝?嚗??頝臬??誘??decode??
     // ----------------------------
     // Miss / refill state machine
     // ----------------------------
@@ -170,7 +163,7 @@ module i_cache
     // Hold info for miss/refill
     reg [ADDR_WIDTH-1:0] miss_pc;
     reg                  miss_uncached;
-    reg [7:0]            miss_kill_tag;
+    reg                  miss_kill_tag;
 
     reg [ADDR_WIDTH-1:0] refill_addr_aligned;
     reg [INDEX_BITS-1:0] refill_index;
@@ -200,6 +193,7 @@ module i_cache
     assign if_req_ready = (state == ST_IDLE) && !(if_resp_valid && !if_resp_ready);
 
     wire accept_req;
+    // Block request acceptance on kill cycle to avoid stale sequential PC capture.
     assign accept_req = if_req_valid && if_req_ready && !if_req_kill;
 
     // ----------------------------
@@ -230,7 +224,7 @@ module i_cache
             ic_inv_ack   <= 1'b0;
 
             kill_prev   <= 1'b0;
-            kill_toggle <= 8'd0;
+            kill_toggle <= 1'b0;
 
             flush_pending <= 1'b0;
             flush_idx <= {INDEX_BITS{1'b0}};
@@ -255,18 +249,20 @@ module i_cache
             // kill toggle edge detect
             kill_prev <= if_req_kill;
             if (if_req_kill && !kill_prev) begin
-                kill_toggle <= kill_toggle + 8'd1;
+                kill_toggle <= ~kill_toggle;
+                // Drop queued pre-redirect response/path state from old epoch.
                 if_resp_valid <= 1'b0;
-                // Drop queued response from the old control-flow epoch.
-            end // 紀錄是否需要翻轉
+                s1_valid <= 1'b0;
+                s2_valid <= 1'b0;
+            end // 蝝??阡?閬蕃頧?
             // response handshake
             if (if_resp_valid && if_resp_ready) begin
                 if_resp_valid <= 1'b0;
-            end//表示回應已經接收所以需要進行處理，不能再接收
+            end//銵函內??撌脩??交?隞仿?閬脰???嚗??賢??交
 
             // latch pending flush/invalidate requests
             if (ic_flush_req) begin
-                flush_pending <= 1'b1;//我收到了 flush 指令，但還沒做（或尚未開始做）
+                flush_pending <= 1'b1;
             end
             if (ic_inv_valid) begin
                 inv_pending <= 1'b1;
@@ -406,7 +402,7 @@ module i_cache
                 // =========================
                 ST_MISS_REQ: begin
                     // drive req until handshake
-                    l2_req_valid <= 1'b1; //問L2我可以傳送資料嗎
+                    l2_req_valid <= 1'b1; //?2?隞亙????
 
                     if (miss_uncached) begin
                         l2_req_cmd  <= 2'b01; // UC_READ
@@ -420,7 +416,7 @@ module i_cache
                         l2_req_len  <= 8'd7;   // 8 beats - 1
                     end
 
-                    l2_rsp_ready <= 1'b0; //告訴L2我可以接收資料嗎
+                    l2_rsp_ready <= 1'b0; //?迄L2?隞交?嗉???
 
                     if (l2_req_valid && l2_req_ready) begin
                         // request accepted
@@ -565,13 +561,4 @@ module i_cache
     end
 
 endmodule
-
-
-
-
-
-
-
-
-
 

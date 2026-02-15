@@ -129,7 +129,8 @@ module l2_cache_core
     // UC_RD/UC_WR: 1 beat -> len=0, size=3 (8B)
     // WB_LINE: 8 beats streaming on req channel -> len=7, size=3 (8B)
     wire req_len_ok_line = (len_r == 8'd7) && (size_r == 3'b011);//LINE_RD（整條 64B）必須是 8 beats
-    wire req_len_ok_uc   = (len_r == 8'd0) && (size_r == 3'b011);//UC_RD/UC_WR 只能是 單拍
+    wire req_len_ok_uc   = (len_r == 8'd0) &&
+                           ((size_r == 3'b010) || (size_r == 3'b011)); // UC_RD/UC_WR 只能是 單拍
     wire req_len_ok_wb   = (len_r == 8'd7) && (size_r == 3'b011);//WB_LINE 寫回整條 64B
     wire req_len_ok =//每一種 cmd 都有它自己應該符合的 len/size 格式，這段是把它們整理成一個總開關 req_len_ok
         (cmd_r == CMD_LINE_RD) ? req_len_ok_line :

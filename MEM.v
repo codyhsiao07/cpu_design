@@ -41,22 +41,13 @@ module mem_stage (
   reg [31:0] addr_q;           // byte address
   reg [31:0] wdata_q;          // store data (source from EX)
   reg [2:0]  size_f3_q;        // funct3 (signedness + size)
-  reg        done_q;           // remember txn completion until new instruction arrives
+  reg        done_q;           // one-cycle suppress to avoid re-issuing held EX/MEM op
   reg [31:0] load_data_q;      // latched load data
   reg        load_active_q;    // active load awaiting response
-  reg        mem_read_q;       // latched mem_read flag for current txn
   reg        req_pending_q;    // request waiting for downstream accept
 
   wire mem_op_active = mem_mem_read_i | mem_mem_write_i;
-  wire same_mem_inputs =
-      (mem_mem_write_i == we_q) &&
-      (mem_mem_read_i  == mem_read_q) &&
-      (mem_alu_result_i == addr_q) &&
-      ((we_q ? (mem_store_data_i == wdata_q) : 1'b1)) &&
-      (mem_size_i == size_f3_q);
-
-  wire done_block = done_q & same_mem_inputs;
-  wire new_req = mem_valid_i & mem_op_active & ~busy_q & ~done_block;
+  wire new_req = mem_valid_i & mem_op_active & ~busy_q & ~done_q;
   wire new_load_req = new_req & ~mem_mem_write_i; // pulse when accepting a load
 
   wire [1:0] size2_q = size_f3_q[1:0];   // 00=byte,01=half,10=word
@@ -104,9 +95,14 @@ module mem_stage (
       done_q         <= 1'b0;
       load_data_q    <= 32'h0;
       load_active_q  <= 1'b0;
-      mem_read_q     <= 1'b0;
       req_pending_q  <= 1'b0;
     end else begin
+      // done_q is intentionally a one-cycle pulse used to suppress exactly
+      // one re-issue cycle while EX/MEM is still holding the completed op.
+      if (done_q) begin
+        done_q <= 1'b0;
+      end
+
       // Complete current transaction
       if (busy_q) begin
         if (we_q) begin
@@ -131,13 +127,8 @@ module mem_stage (
         addr_q    <= mem_alu_result_i;
         wdata_q   <= mem_store_data_i;
         size_f3_q <= mem_size_i;
-        mem_read_q<= mem_mem_read_i;
         done_q    <= 1'b0;
         load_active_q  <= ~mem_mem_write_i;
-      end else if (~busy_q) begin
-        if (~mem_valid_i || ~mem_op_active || ~same_mem_inputs) begin
-          done_q <= 1'b0;
-        end
       end
     end
   end

@@ -496,8 +496,27 @@ module dcache_blocking
                 S_REFILL_RECV: begin
                     if (l2_rsp_valid && l2_rsp_ready) begin
                         refill_line_r <= line_set_beat64(refill_line_r, beat_cnt_r, l2_rsp_rdata);
-                        if (beat_cnt_r == 3'd7) state <= S_REFILL_COMMIT;
-                        beat_cnt_r <= beat_cnt_r + 3'd1;
+                        // L2 may terminate early on error (single-beat ERR_RSP).
+                        // Treat any early-last/error as transaction failure and
+                        // return an error response instead of waiting forever.
+                        if (l2_rsp_err) begin
+                            cpu_rsp_rdata <= {CPU_DATA_W{1'b0}};
+                            cpu_rsp_err   <= 1'b1 | wb_err_r;
+                            cpu_rsp_valid <= 1'b1;
+                            state <= S_RESP;
+                        end else if (l2_rsp_last) begin
+                            if (beat_cnt_r == 3'd7) begin
+                                state <= S_REFILL_COMMIT;
+                            end else begin
+                                // Protocol mismatch: short LINE_RD without explicit error.
+                                cpu_rsp_rdata <= {CPU_DATA_W{1'b0}};
+                                cpu_rsp_err   <= 1'b1 | wb_err_r;
+                                cpu_rsp_valid <= 1'b1;
+                                state <= S_RESP;
+                            end
+                        end else begin
+                            beat_cnt_r <= beat_cnt_r + 3'd1;
+                        end
                     end
                 end
 
