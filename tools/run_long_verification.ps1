@@ -213,9 +213,9 @@ foreach ($r in $traceRows) {
 $diffCsv = Join-Path $diffDir "diff_summary.csv"
 $diffRows | Export-Csv -NoTypeInformation -Path $diffCsv
 
-$totalTrace = $traceRows.Count
-$traceFail  = ($traceRows | Where-Object { $_.Status -eq "FAIL" }).Count
-$diffFail   = ($diffRows  | Where-Object { $_.Status -eq "FAIL" }).Count
+$totalTrace = @($traceRows).Count
+$traceFail  = @($traceRows | Where-Object { $_.Status -eq "FAIL" }).Count
+$diffFail   = @($diffRows  | Where-Object { $_.Status -eq "FAIL" }).Count
 
 $report = @()
 $report += "Long Verification Report"

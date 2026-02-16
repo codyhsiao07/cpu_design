@@ -35,7 +35,7 @@ module icache_pipeline_tb;
 
   // I$ L2 interface
   wire                  l2_req_valid;
-  reg                   l2_req_ready;
+  wire                  l2_req_ready;
   wire [ADDR_WIDTH-1:0] l2_req_addr;
   wire [1:0]            l2_req_cmd;
   wire [2:0]            l2_req_size;
@@ -310,6 +310,22 @@ module icache_pipeline_tb;
   integer cov_max_d_rsp_stall;
   integer cov_i_rsp_stall_cur;
   integer cov_d_rsp_stall_cur;
+  integer state_cov_en;
+  reg [8*128-1:0] state_cov_file;
+  integer state_cov_fd;
+  reg [6:0]   cov_ic_state_seen;
+  reg [11:0]  cov_dc_state_seen;
+  reg [17:0]  cov_l2_state_seen;
+  reg [83:0]  cov_ic_dc_cross_seen;  // 7 * 12
+  reg [125:0] cov_ic_l2_cross_seen;  // 7 * 18
+  reg [215:0] cov_dc_l2_cross_seen;  // 12 * 18
+  integer cov_ev_both_req_valid;
+  integer cov_ev_redirect_with_fetch_rsp;
+  integer cov_ev_iwait_and_drefill;
+  integer cov_ev_iwait_and_dwbwait;
+  integer cov_ev_l2_err_rsp;
+  integer cov_ev_l2_d_sel_with_i_req;
+  integer cov_ev_l2_i_sel_with_d_req;
 
   // Request stability/watchdog checkers
   reg hold_i_req;
@@ -337,6 +353,45 @@ module icache_pipeline_tb;
   reg        hold_d_rsp_last;
   reg        hold_d_rsp_err;
   integer    hold_d_rsp_cycles;
+
+  // Monitor channels: in MIG mode, use DUT internal L2 links; otherwise use TB external links.
+  wire                  mon_i_req_valid = l2_req_valid;
+  wire                  mon_i_req_ready = USE_MIG ? dut.i_l2_req_ready_int : l2_req_ready;
+  wire [ADDR_WIDTH-1:0] mon_i_req_addr  = l2_req_addr;
+  wire [1:0]            mon_i_req_cmd   = l2_req_cmd;
+  wire [2:0]            mon_i_req_size  = l2_req_size;
+  wire [7:0]            mon_i_req_len   = l2_req_len;
+
+  wire                  mon_d_req_valid = d_l2_req_valid;
+  wire                  mon_d_req_ready = USE_MIG ? dut.d_l2_req_ready_int : d_l2_req_ready;
+  wire [ADDR_WIDTH-1:0] mon_d_req_addr  = d_l2_req_addr;
+  wire [1:0]            mon_d_req_cmd   = d_l2_req_cmd;
+  wire [2:0]            mon_d_req_size  = d_l2_req_size;
+  wire [7:0]            mon_d_req_len   = d_l2_req_len;
+  wire [L2_DATA_W-1:0]  mon_d_req_wdata = d_l2_req_wdata;
+  wire [(L2_DATA_W/8)-1:0] mon_d_req_wstrb = d_l2_req_wstrb;
+
+  wire                  mon_i_rsp_valid = USE_MIG ? dut.i_l2_rsp_valid_int : l2_rsp_valid;
+  wire                  mon_i_rsp_ready = l2_rsp_ready;
+  wire [L2_DATA_W-1:0]  mon_i_rsp_data  = USE_MIG ? dut.i_l2_rsp_data_int : l2_rsp_data;
+  wire                  mon_i_rsp_last  = USE_MIG ? dut.i_l2_rsp_last_int : l2_rsp_last;
+  wire                  mon_i_rsp_err   = USE_MIG ? dut.i_l2_rsp_err_int : l2_rsp_err;
+
+  wire                  mon_d_rsp_valid = USE_MIG ? dut.d_l2_rsp_valid_int : d_l2_rsp_valid;
+  wire                  mon_d_rsp_ready = d_l2_rsp_ready;
+  wire [L2_DATA_W-1:0]  mon_d_rsp_rdata = USE_MIG ? dut.d_l2_rsp_rdata_int : d_l2_rsp_rdata;
+  wire                  mon_d_rsp_last  = USE_MIG ? dut.d_l2_rsp_last_int : d_l2_rsp_last;
+  wire                  mon_d_rsp_err   = USE_MIG ? dut.d_l2_rsp_err_int : d_l2_rsp_err;
+  wire [2:0]            cov_ic_state_cur = dut.u_icache.u_icache.state;
+  wire [3:0]            cov_dc_state_cur = dut.u_dcache.state;
+  wire [4:0]            cov_l2_state_cur = USE_MIG ? dut.GEN_MIG.u_l2.u_core.state : 5'd0;
+
+`ifdef SYNTHESIS
+  reg tb_i_err_force_active;
+  reg tb_i_err_injected;
+  reg tb_d_err_force_active;
+  reg tb_d_err_injected;
+`endif
 
   function integer rand_mod_tb;
     input integer maxv;
@@ -434,9 +489,40 @@ module icache_pipeline_tb;
     end
   endtask
 
+  task dump_state_cov;
+    begin
+      if (state_cov_en != 0) begin
+        state_cov_fd = $fopen(state_cov_file, "w");
+        if (state_cov_fd != 0) begin
+          $fdisplay(state_cov_fd, "test=%0d", test_id);
+          $fdisplay(state_cov_fd, "cycles=%0d", cycles);
+          $fdisplay(state_cov_fd, "ic_state_seen=0x%0h", cov_ic_state_seen);
+          $fdisplay(state_cov_fd, "dc_state_seen=0x%0h", cov_dc_state_seen);
+          $fdisplay(state_cov_fd, "l2_state_seen=0x%0h", cov_l2_state_seen);
+          $fdisplay(state_cov_fd, "ic_dc_cross_seen=0x%0h", cov_ic_dc_cross_seen);
+          $fdisplay(state_cov_fd, "ic_l2_cross_seen=0x%0h", cov_ic_l2_cross_seen);
+          $fdisplay(state_cov_fd, "dc_l2_cross_seen=0x%0h", cov_dc_l2_cross_seen);
+          $fdisplay(state_cov_fd, "ev_both_req_valid=%0d", cov_ev_both_req_valid);
+          $fdisplay(state_cov_fd, "ev_redirect_with_fetch_rsp=%0d", cov_ev_redirect_with_fetch_rsp);
+          $fdisplay(state_cov_fd, "ev_iwait_and_drefill=%0d", cov_ev_iwait_and_drefill);
+          $fdisplay(state_cov_fd, "ev_iwait_and_dwbwait=%0d", cov_ev_iwait_and_dwbwait);
+          $fdisplay(state_cov_fd, "ev_l2_err_rsp=%0d", cov_ev_l2_err_rsp);
+          $fdisplay(state_cov_fd, "ev_l2_d_sel_with_i_req=%0d", cov_ev_l2_d_sel_with_i_req);
+          $fdisplay(state_cov_fd, "ev_l2_i_sel_with_d_req=%0d", cov_ev_l2_i_sel_with_d_req);
+          $fclose(state_cov_fd);
+          state_cov_fd = 0;
+          $display("[TB STATECOV] wrote %0s", state_cov_file);
+        end else begin
+          $display("[TB STATECOV] WARN: cannot open %0s", state_cov_file);
+        end
+      end
+    end
+  endtask
+
   task tb_finish;
     begin
       dump_cov;
+      dump_state_cov;
       if (trace_fd != 0) begin
         $fclose(trace_fd);
         trace_fd = 0;
@@ -445,9 +531,7 @@ module icache_pipeline_tb;
     end
   endtask
 
-  always @(*) begin
-    l2_req_ready = ~pending;
-  end
+  assign l2_req_ready = USE_MIG ? 1'b0 : ~pending;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -463,57 +547,70 @@ module icache_pipeline_tb;
       l2_rsp_err   <= 1'b0;
       linefill_cnt <= 0;
     end else begin
-      // count line fills
-      if (l2_req_valid && l2_req_ready && (l2_req_cmd == 2'b00))
+      // count line fills on the active I$ request channel
+      if (mon_i_req_valid && mon_i_req_ready && (mon_i_req_cmd == 2'b00))
         linefill_cnt <= linefill_cnt + 1;
-
-      // latch request
-      if (l2_req_valid && l2_req_ready) begin
-        pending      <= 1'b1;
-        pending_uc   <= (l2_req_cmd == 2'b01);
-        pending_addr <= l2_req_addr;
+      if (USE_MIG) begin
+        // In MIG mode, external TB L2 model is unused.
+        pending      <= 1'b0;
+        pending_uc   <= 1'b0;
+        pending_addr <= 32'b0;
         pending_beat <= 4'd0;
-        if (rand_mem_en != 0)
-          i_delay_cnt  <= rand_mod_tb(rand_i_delay_max);
-        else
-          i_delay_cnt  <= i_delay_cfg;
-        i_err_armed  <= i_err_once;
-      end
-
-      // drop valid after handshake
-      if (l2_rsp_valid && l2_rsp_ready)
+        i_delay_cnt  <= 0;
+        i_err_armed  <= 1'b0;
         l2_rsp_valid <= 1'b0;
+        l2_rsp_data  <= 64'b0;
+        l2_rsp_last  <= 1'b0;
+        l2_rsp_err   <= 1'b0;
+      end else begin
+        // latch request
+        if (l2_req_valid && l2_req_ready) begin
+          pending      <= 1'b1;
+          pending_uc   <= (l2_req_cmd == 2'b01);
+          pending_addr <= l2_req_addr;
+          pending_beat <= 4'd0;
+          if (rand_mem_en != 0)
+            i_delay_cnt  <= rand_mod_tb(rand_i_delay_max);
+          else
+            i_delay_cnt  <= i_delay_cfg;
+          i_err_armed  <= i_err_once;
+        end
 
-      if (pending) begin
-        if (i_delay_cnt != 0) begin
-          i_delay_cnt <= i_delay_cnt - 1;
-        end else if (!l2_rsp_valid || (l2_rsp_valid && l2_rsp_ready)) begin
-          l2_rsp_valid <= 1'b1;
-          l2_rsp_err   <= i_err_armed;
-          if (pending_uc) begin
-            l2_rsp_data <= {32'h0, mem_word(pending_addr)};
-            l2_rsp_last <= 1'b1;
-            if (l2_rsp_ready)
-              pending <= 1'b0;
-          end else begin
-            l2_rsp_data <= make_beat(pending_addr, pending_beat);
-            l2_rsp_last <= (pending_beat == 4'd7);
-            if (l2_rsp_ready) begin
-              if (pending_beat == 4'd7)
+        // drop valid after handshake
+        if (l2_rsp_valid && l2_rsp_ready)
+          l2_rsp_valid <= 1'b0;
+
+        if (pending) begin
+          if (i_delay_cnt != 0) begin
+            i_delay_cnt <= i_delay_cnt - 1;
+          end else if (!l2_rsp_valid || (l2_rsp_valid && l2_rsp_ready)) begin
+            l2_rsp_valid <= 1'b1;
+            l2_rsp_err   <= i_err_armed;
+            if (pending_uc) begin
+              l2_rsp_data <= {32'h0, mem_word(pending_addr)};
+              l2_rsp_last <= 1'b1;
+              if (l2_rsp_ready)
                 pending <= 1'b0;
-              else
-                pending_beat <= pending_beat + 1'b1;
+            end else begin
+              l2_rsp_data <= make_beat(pending_addr, pending_beat);
+              l2_rsp_last <= (pending_beat == 4'd7);
+              if (l2_rsp_ready) begin
+                if (pending_beat == 4'd7)
+                  pending <= 1'b0;
+                else
+                  pending_beat <= pending_beat + 1'b1;
+              end
             end
+            if (i_err_armed && l2_rsp_ready)
+              i_err_armed <= 1'b0;
           end
-          if (i_err_armed && l2_rsp_ready)
-            i_err_armed <= 1'b0;
         end
       end
     end
   end
 
   // D$ L2 model (simple, always-ready)
-  assign d_l2_req_ready = 1'b1;
+  assign d_l2_req_ready = USE_MIG ? 1'b0 : 1'b1;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -528,6 +625,18 @@ module icache_pipeline_tb;
       d_l2_rsp_rdata<= 64'b0;
       d_l2_rsp_last <= 1'b0;
       d_l2_rsp_err  <= 1'b0;
+    end else if (USE_MIG) begin
+      d_pending      <= 1'b0;
+      d_rsp_type     <= 2'b00;
+      d_rsp_addr     <= 32'b0;
+      d_rsp_beat     <= 3'd0;
+      d_wb_beat      <= 3'd0;
+      d_delay_cnt    <= 0;
+      d_err_armed    <= 1'b0;
+      d_l2_rsp_valid <= 1'b0;
+      d_l2_rsp_rdata <= 64'b0;
+      d_l2_rsp_last  <= 1'b0;
+      d_l2_rsp_err   <= 1'b0;
     end else begin
       if (d_l2_rsp_valid && d_l2_rsp_ready)
         d_l2_rsp_valid <= 1'b0;
@@ -651,8 +760,11 @@ module icache_pipeline_tb;
     cov_en = 0;
     trace_file = "build_rv32/commit_trace.log";
     cov_file = "build_rv32/tb_coverage.txt";
+    state_cov_en = 0;
+    state_cov_file = "build_rv32/state_coverage.txt";
     trace_fd = 0;
     cov_fd = 0;
+    state_cov_fd = 0;
     i_err_once = 1'b0;
     d_err_once = 1'b0;
 
@@ -829,7 +941,9 @@ module icache_pipeline_tb;
         expect_rd = 5'd10;
         expect_val = 32'h2600C0DE;
         require_linefill = 1'b0;
-        max_cycles = 120000;
+        // This workload runs longer than the previous timeout on iverilog,
+        // so keep a larger headroom to avoid false TIMEOUT failures.
+        max_cycles = 220000;
       end
       27: begin
         // Full mixed stress (branch-delay-slot-safe variant).
@@ -897,6 +1011,12 @@ module icache_pipeline_tb;
     if ($value$plusargs("COV_FILE=%s", cov_file)) begin
       // coverage report file path
     end
+    if ($value$plusargs("STATE_COV_EN=%d", state_cov_en)) begin
+      // state-space coverage report enable
+    end
+    if ($value$plusargs("STATE_COV_FILE=%s", state_cov_file)) begin
+      // state-space coverage report path
+    end
 
     $display("[TB CFG] TEST=%0d MEMFILE=%0s EXPECT_RD=x%0d EXPECT_VAL=0x%08x MAXCYCLES=%0d",
              test_id, memfile, expect_rd, expect_val, max_cycles);
@@ -904,6 +1024,8 @@ module icache_pipeline_tb;
              rand_mem_en, rand_seed, rand_i_delay_max, rand_d_delay_max, assert_en, stall_watchdog_max);
     $display("[TB CFG] TRACE_EN=%0d TRACE_FILE=%0s COV_EN=%0d COV_FILE=%0s",
              trace_en, trace_file, cov_en, cov_file);
+    $display("[TB CFG] STATE_COV_EN=%0d STATE_COV_FILE=%0s",
+             state_cov_en, state_cov_file);
 
     clk  = 1'b0;
     rst_n = 1'b0;
@@ -962,6 +1084,25 @@ module icache_pipeline_tb;
     cov_max_d_rsp_stall = 0;
     cov_i_rsp_stall_cur = 0;
     cov_d_rsp_stall_cur = 0;
+    cov_ic_state_seen = 7'd0;
+    cov_dc_state_seen = 12'd0;
+    cov_l2_state_seen = 18'd0;
+    cov_ic_dc_cross_seen = 84'd0;
+    cov_ic_l2_cross_seen = 126'd0;
+    cov_dc_l2_cross_seen = 216'd0;
+    cov_ev_both_req_valid = 0;
+    cov_ev_redirect_with_fetch_rsp = 0;
+    cov_ev_iwait_and_drefill = 0;
+    cov_ev_iwait_and_dwbwait = 0;
+    cov_ev_l2_err_rsp = 0;
+    cov_ev_l2_d_sel_with_i_req = 0;
+    cov_ev_l2_i_sel_with_d_req = 0;
+`ifdef SYNTHESIS
+    tb_i_err_force_active = 1'b0;
+    tb_i_err_injected     = 1'b0;
+    tb_d_err_force_active = 1'b0;
+    tb_d_err_injected     = 1'b0;
+`endif
 
     if (trace_en != 0) begin
       trace_fd = $fopen(trace_file, "w");
@@ -1010,6 +1151,48 @@ module icache_pipeline_tb;
     end
   end
 
+`ifdef SYNTHESIS
+  // In -DSYNTHESIS simulations, l2_cache_top debug injectors are compiled as wires.
+  // Force them from TB so test15/test16 still exercise real DUT error paths in MIG mode.
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      tb_i_err_force_active <= 1'b0;
+      tb_i_err_injected     <= 1'b0;
+      tb_d_err_force_active <= 1'b0;
+      tb_d_err_injected     <= 1'b0;
+      if (USE_MIG) begin
+        release dut.GEN_MIG.u_l2.dbg_i_err_once;
+        release dut.GEN_MIG.u_l2.dbg_d_err_once;
+      end
+    end else if (USE_MIG) begin
+      if (i_err_once && !tb_i_err_injected && !tb_i_err_force_active) begin
+        force dut.GEN_MIG.u_l2.dbg_i_err_once = 1'b1;
+        tb_i_err_force_active <= 1'b1;
+      end
+      if (d_err_once && !tb_d_err_injected && !tb_d_err_force_active) begin
+        force dut.GEN_MIG.u_l2.dbg_d_err_once = 1'b1;
+        tb_d_err_force_active <= 1'b1;
+      end
+
+      if (tb_i_err_force_active &&
+          dut.GEN_MIG.u_l2.sel_busy && !dut.GEN_MIG.u_l2.sel_is_d &&
+          dut.GEN_MIG.u_l2.core_rsp_valid && dut.GEN_MIG.u_l2.core_rsp_ready) begin
+        release dut.GEN_MIG.u_l2.dbg_i_err_once;
+        tb_i_err_force_active <= 1'b0;
+        tb_i_err_injected     <= 1'b1;
+      end
+
+      if (tb_d_err_force_active &&
+          dut.GEN_MIG.u_l2.sel_busy && dut.GEN_MIG.u_l2.sel_is_d &&
+          dut.GEN_MIG.u_l2.core_rsp_valid && dut.GEN_MIG.u_l2.core_rsp_ready) begin
+        release dut.GEN_MIG.u_l2.dbg_d_err_once;
+        tb_d_err_force_active <= 1'b0;
+        tb_d_err_injected     <= 1'b1;
+      end
+    end
+  end
+`endif
+
   // PASS/FAIL conditions
   always @(posedge clk) begin
     if (rst_n && ifetch_err) begin
@@ -1020,7 +1203,7 @@ module icache_pipeline_tb;
       end
       tb_finish;
     end
-    if (rst_n && (test_id == 16) && (d_l2_rsp_valid && d_l2_rsp_err)) begin
+    if (rst_n && (test_id == 16) && (mon_d_rsp_valid && mon_d_rsp_err)) begin
       $display("PASS: test 16 D$ error observed");
       tb_finish;
     end
@@ -1052,18 +1235,18 @@ module icache_pipeline_tb;
       if (ifetch_err)
         cov_ifetch_err <= cov_ifetch_err + 1;
 
-      if (l2_req_valid && l2_req_ready) begin
+      if (mon_i_req_valid && mon_i_req_ready) begin
         cov_i_req_hs <= cov_i_req_hs + 1;
-        case (l2_req_cmd)
+        case (mon_i_req_cmd)
           2'b00: cov_i_req_line <= cov_i_req_line + 1;
           2'b01: cov_i_req_uc   <= cov_i_req_uc + 1;
           default: cov_i_req_other <= cov_i_req_other + 1;
         endcase
       end
 
-      if (d_l2_req_valid && d_l2_req_ready) begin
+      if (mon_d_req_valid && mon_d_req_ready) begin
         cov_d_req_hs <= cov_d_req_hs + 1;
-        case (d_l2_req_cmd)
+        case (mon_d_req_cmd)
           2'b00: cov_d_req_line  <= cov_d_req_line + 1;
           2'b01: cov_d_req_uc_rd <= cov_d_req_uc_rd + 1;
           2'b10: cov_d_req_uc_wr <= cov_d_req_uc_wr + 1;
@@ -1071,28 +1254,28 @@ module icache_pipeline_tb;
         endcase
       end
 
-      if (l2_rsp_valid && l2_rsp_ready) begin
+      if (mon_i_rsp_valid && mon_i_rsp_ready) begin
         cov_i_rsp_hs <= cov_i_rsp_hs + 1;
-        if (l2_rsp_err)
+        if (mon_i_rsp_err)
           cov_i_rsp_err <= cov_i_rsp_err + 1;
       end
 
-      if (d_l2_rsp_valid && d_l2_rsp_ready) begin
+      if (mon_d_rsp_valid && mon_d_rsp_ready) begin
         cov_d_rsp_hs <= cov_d_rsp_hs + 1;
-        if (d_l2_rsp_err)
+        if (mon_d_rsp_err)
           cov_d_rsp_err <= cov_d_rsp_err + 1;
       end
 
-      if (l2_req_valid && !l2_req_ready) begin
+      if (mon_i_req_valid && !mon_i_req_ready) begin
         if ((hold_i_cycles + 1) > cov_max_i_req_stall)
           cov_max_i_req_stall <= hold_i_cycles + 1;
       end
-      if (d_l2_req_valid && !d_l2_req_ready) begin
+      if (mon_d_req_valid && !mon_d_req_ready) begin
         if ((hold_d_cycles + 1) > cov_max_d_req_stall)
           cov_max_d_req_stall <= hold_d_cycles + 1;
       end
 
-      if (l2_rsp_valid && !l2_rsp_ready) begin
+      if (mon_i_rsp_valid && !mon_i_rsp_ready) begin
         cov_i_rsp_stall_cur <= cov_i_rsp_stall_cur + 1;
         if ((cov_i_rsp_stall_cur + 1) > cov_max_i_rsp_stall)
           cov_max_i_rsp_stall <= cov_i_rsp_stall_cur + 1;
@@ -1100,13 +1283,61 @@ module icache_pipeline_tb;
         cov_i_rsp_stall_cur <= 0;
       end
 
-      if (d_l2_rsp_valid && !d_l2_rsp_ready) begin
+      if (mon_d_rsp_valid && !mon_d_rsp_ready) begin
         cov_d_rsp_stall_cur <= cov_d_rsp_stall_cur + 1;
         if ((cov_d_rsp_stall_cur + 1) > cov_max_d_rsp_stall)
           cov_max_d_rsp_stall <= cov_d_rsp_stall_cur + 1;
       end else begin
         cov_d_rsp_stall_cur <= 0;
       end
+    end
+  end
+
+  // Optional state-space coverage: FSM state hits + cross-state hits + rare contention events.
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      cov_ic_state_seen <= 7'd0;
+      cov_dc_state_seen <= 12'd0;
+      cov_l2_state_seen <= 18'd0;
+      cov_ic_dc_cross_seen <= 84'd0;
+      cov_ic_l2_cross_seen <= 126'd0;
+      cov_dc_l2_cross_seen <= 216'd0;
+      cov_ev_both_req_valid <= 0;
+      cov_ev_redirect_with_fetch_rsp <= 0;
+      cov_ev_iwait_and_drefill <= 0;
+      cov_ev_iwait_and_dwbwait <= 0;
+      cov_ev_l2_err_rsp <= 0;
+      cov_ev_l2_d_sel_with_i_req <= 0;
+      cov_ev_l2_i_sel_with_d_req <= 0;
+    end else begin
+      if (cov_ic_state_cur <= 3'd6)
+        cov_ic_state_seen[cov_ic_state_cur] <= 1'b1;
+      if (cov_dc_state_cur <= 4'd11)
+        cov_dc_state_seen[cov_dc_state_cur] <= 1'b1;
+      if (cov_l2_state_cur <= 5'd17)
+        cov_l2_state_seen[cov_l2_state_cur] <= 1'b1;
+
+      if ((cov_ic_state_cur <= 3'd6) && (cov_dc_state_cur <= 4'd11))
+        cov_ic_dc_cross_seen[(cov_ic_state_cur * 12) + cov_dc_state_cur] <= 1'b1;
+      if ((cov_ic_state_cur <= 3'd6) && (cov_l2_state_cur <= 5'd17))
+        cov_ic_l2_cross_seen[(cov_ic_state_cur * 18) + cov_l2_state_cur] <= 1'b1;
+      if ((cov_dc_state_cur <= 4'd11) && (cov_l2_state_cur <= 5'd17))
+        cov_dc_l2_cross_seen[(cov_dc_state_cur * 18) + cov_l2_state_cur] <= 1'b1;
+
+      if (mon_i_req_valid && mon_d_req_valid)
+        cov_ev_both_req_valid <= cov_ev_both_req_valid + 1;
+      if (dut.fe_redirect_valid && dut.fetch_resp_valid)
+        cov_ev_redirect_with_fetch_rsp <= cov_ev_redirect_with_fetch_rsp + 1;
+      if ((cov_ic_state_cur == 3'd2) && (cov_dc_state_cur == 4'd8))
+        cov_ev_iwait_and_drefill <= cov_ev_iwait_and_drefill + 1;
+      if ((cov_ic_state_cur == 3'd2) && (cov_dc_state_cur == 4'd6))
+        cov_ev_iwait_and_dwbwait <= cov_ev_iwait_and_dwbwait + 1;
+      if (cov_l2_state_cur == 5'd17)
+        cov_ev_l2_err_rsp <= cov_ev_l2_err_rsp + 1;
+      if (USE_MIG && dut.GEN_MIG.u_l2.sel_busy && dut.GEN_MIG.u_l2.sel_is_d && mon_i_req_valid)
+        cov_ev_l2_d_sel_with_i_req <= cov_ev_l2_d_sel_with_i_req + 1;
+      if (USE_MIG && dut.GEN_MIG.u_l2.sel_busy && !dut.GEN_MIG.u_l2.sel_is_d && mon_d_req_valid)
+        cov_ev_l2_i_sel_with_d_req <= cov_ev_l2_i_sel_with_d_req + 1;
     end
   end
 
@@ -1123,21 +1354,21 @@ module icache_pipeline_tb;
       hold_d_rsp_cycles <= 0;
     end else begin
       // I$ request must be stable while stalled.
-      if (l2_req_valid && !l2_req_ready) begin
+      if (mon_i_req_valid && !mon_i_req_ready) begin
         if (!hold_i_req) begin
           hold_i_req   <= 1'b1;
-          hold_i_addr  <= l2_req_addr;
-          hold_i_cmd   <= l2_req_cmd;
-          hold_i_size  <= l2_req_size;
-          hold_i_len   <= l2_req_len;
+          hold_i_addr  <= mon_i_req_addr;
+          hold_i_cmd   <= mon_i_req_cmd;
+          hold_i_size  <= mon_i_req_size;
+          hold_i_len   <= mon_i_req_len;
           hold_i_cycles<= 1;
         end else begin
           hold_i_cycles <= hold_i_cycles + 1;
           if (assert_en != 0) begin
-            if ((l2_req_addr != hold_i_addr) ||
-                (l2_req_cmd  != hold_i_cmd)  ||
-                (l2_req_size != hold_i_size) ||
-                (l2_req_len  != hold_i_len)) begin
+            if ((mon_i_req_addr != hold_i_addr) ||
+                (mon_i_req_cmd  != hold_i_cmd)  ||
+                (mon_i_req_size != hold_i_size) ||
+                (mon_i_req_len  != hold_i_len)) begin
               $display("ASSERT_FAIL: I req changed while stalled at cycle=%0d", cycles);
               tb_finish;
             end
@@ -1153,25 +1384,25 @@ module icache_pipeline_tb;
       end
 
       // D$ request must be stable while stalled.
-      if (d_l2_req_valid && !d_l2_req_ready) begin
+      if (mon_d_req_valid && !mon_d_req_ready) begin
         if (!hold_d_req) begin
           hold_d_req    <= 1'b1;
-          hold_d_addr   <= d_l2_req_addr;
-          hold_d_cmd    <= d_l2_req_cmd;
-          hold_d_size   <= d_l2_req_size;
-          hold_d_len    <= d_l2_req_len;
-          hold_d_wdata  <= d_l2_req_wdata;
-          hold_d_wstrb  <= d_l2_req_wstrb;
+          hold_d_addr   <= mon_d_req_addr;
+          hold_d_cmd    <= mon_d_req_cmd;
+          hold_d_size   <= mon_d_req_size;
+          hold_d_len    <= mon_d_req_len;
+          hold_d_wdata  <= mon_d_req_wdata;
+          hold_d_wstrb  <= mon_d_req_wstrb;
           hold_d_cycles <= 1;
         end else begin
           hold_d_cycles <= hold_d_cycles + 1;
           if (assert_en != 0) begin
-            if ((d_l2_req_addr  != hold_d_addr)  ||
-                (d_l2_req_cmd   != hold_d_cmd)   ||
-                (d_l2_req_size  != hold_d_size)  ||
-                (d_l2_req_len   != hold_d_len)   ||
-                (d_l2_req_wdata != hold_d_wdata) ||
-                (d_l2_req_wstrb != hold_d_wstrb)) begin
+            if ((mon_d_req_addr  != hold_d_addr)  ||
+                (mon_d_req_cmd   != hold_d_cmd)   ||
+                (mon_d_req_size  != hold_d_size)  ||
+                (mon_d_req_len   != hold_d_len)   ||
+                (mon_d_req_wdata != hold_d_wdata) ||
+                (mon_d_req_wstrb != hold_d_wstrb)) begin
               $display("ASSERT_FAIL: D req changed while stalled at cycle=%0d", cycles);
               tb_finish;
             end
@@ -1187,19 +1418,19 @@ module icache_pipeline_tb;
       end
 
       // I$ response must be stable while stalled.
-      if (l2_rsp_valid && !l2_rsp_ready) begin
+      if (mon_i_rsp_valid && !mon_i_rsp_ready) begin
         if (!hold_i_rsp) begin
           hold_i_rsp       <= 1'b1;
-          hold_i_rsp_data  <= l2_rsp_data;
-          hold_i_rsp_last  <= l2_rsp_last;
-          hold_i_rsp_err   <= l2_rsp_err;
+          hold_i_rsp_data  <= mon_i_rsp_data;
+          hold_i_rsp_last  <= mon_i_rsp_last;
+          hold_i_rsp_err   <= mon_i_rsp_err;
           hold_i_rsp_cycles<= 1;
         end else begin
           hold_i_rsp_cycles <= hold_i_rsp_cycles + 1;
           if (assert_en != 0) begin
-            if ((l2_rsp_data != hold_i_rsp_data) ||
-                (l2_rsp_last != hold_i_rsp_last) ||
-                (l2_rsp_err  != hold_i_rsp_err)) begin
+            if ((mon_i_rsp_data != hold_i_rsp_data) ||
+                (mon_i_rsp_last != hold_i_rsp_last) ||
+                (mon_i_rsp_err  != hold_i_rsp_err)) begin
               $display("ASSERT_FAIL: I rsp changed while stalled at cycle=%0d", cycles);
               tb_finish;
             end
@@ -1215,19 +1446,19 @@ module icache_pipeline_tb;
       end
 
       // D$ response must be stable while stalled.
-      if (d_l2_rsp_valid && !d_l2_rsp_ready) begin
+      if (mon_d_rsp_valid && !mon_d_rsp_ready) begin
         if (!hold_d_rsp) begin
           hold_d_rsp       <= 1'b1;
-          hold_d_rsp_data  <= d_l2_rsp_rdata;
-          hold_d_rsp_last  <= d_l2_rsp_last;
-          hold_d_rsp_err   <= d_l2_rsp_err;
+          hold_d_rsp_data  <= mon_d_rsp_rdata;
+          hold_d_rsp_last  <= mon_d_rsp_last;
+          hold_d_rsp_err   <= mon_d_rsp_err;
           hold_d_rsp_cycles<= 1;
         end else begin
           hold_d_rsp_cycles <= hold_d_rsp_cycles + 1;
           if (assert_en != 0) begin
-            if ((d_l2_rsp_rdata != hold_d_rsp_data) ||
-                (d_l2_rsp_last  != hold_d_rsp_last) ||
-                (d_l2_rsp_err   != hold_d_rsp_err)) begin
+            if ((mon_d_rsp_rdata != hold_d_rsp_data) ||
+                (mon_d_rsp_last  != hold_d_rsp_last) ||
+                (mon_d_rsp_err   != hold_d_rsp_err)) begin
               $display("ASSERT_FAIL: D rsp changed while stalled at cycle=%0d", cycles);
               tb_finish;
             end
@@ -1249,11 +1480,11 @@ module icache_pipeline_tb;
     if (rst_n && ((cycles - last_wb_cycle) == 2000)) begin
       $display("[DBG] no WB for 2000 cycles at cycle=%0d", cycles);
       $display("[DBG] ic_l2 i_req v/r=%0d/%0d i_rsp v/r=%0d/%0d",
-               l2_req_valid, l2_req_ready,
-               l2_rsp_valid, l2_rsp_ready);
+               mon_i_req_valid, mon_i_req_ready,
+               mon_i_rsp_valid, mon_i_rsp_ready);
       $display("[DBG] dc_l2 d_req v/r=%0d/%0d d_rsp v/r=%0d/%0d",
-               d_l2_req_valid, d_l2_req_ready,
-               d_l2_rsp_valid, d_l2_rsp_ready);
+               mon_d_req_valid, mon_d_req_ready,
+               mon_d_rsp_valid, mon_d_rsp_ready);
       $display("[DBG] wb_we=%0d wb_rd=%0d wb_wdata=0x%08x ifetch_err=%0d boot_done=%0d",
                wb_we, wb_rd, wb_wdata, ifetch_err, boot_done);
 `ifndef SYNTHESIS

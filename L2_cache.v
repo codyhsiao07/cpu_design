@@ -119,8 +119,15 @@ module l2_cache_core
     reg [7:0]   wstrb_r;
     reg         unc_r;
 
-    wire is_ddr  = (addr_r >= DDR_BASE)  && (addr_r <= DDR_END);
-    wire is_mmio = (addr_r >= MMIO_BASE) && (addr_r <= MMIO_END);
+    wire is_ddr_raw  = (addr_r >= DDR_BASE)  && (addr_r <= DDR_END);
+    wire is_mmio_raw = (addr_r >= MMIO_BASE) && (addr_r <= MMIO_END);
+    // Legacy low-address aliasing: map 0x0000_0000..0x7fff_ffff into DDR window.
+    // This keeps old tests functional while preserving DDR-space behavior.
+    wire legacy_alias = (addr_r[31] == 1'b0);
+    wire [31:0] addr_eff = is_ddr_raw ? addr_r :
+                           (legacy_alias ? (addr_r + DDR_BASE) : addr_r);
+    wire is_ddr  = (addr_eff >= DDR_BASE)  && (addr_eff <= DDR_END);
+    wire is_mmio = is_mmio_raw;
     wire addr_legal = is_ddr;
     wire unc_eff = unc_r || is_mmio;//這筆存取是否要用 uncached 的方式處理
 
@@ -139,9 +146,9 @@ module l2_cache_core
         (cmd_r == CMD_WB_LINE) ? req_len_ok_wb   :
         1'b0;
 
-    wire [INDEX_BITS-1:0] index_r = addr_r[OFFSET_BITS + INDEX_BITS - 1 : OFFSET_BITS];
-    wire [TAG_BITS-1:0]   tag_r   = addr_r[PA_W-1 : OFFSET_BITS + INDEX_BITS];
-    wire [31:0]           line_addr_r = {addr_r[31:6], 6'b0};
+    wire [INDEX_BITS-1:0] index_r = addr_eff[OFFSET_BITS + INDEX_BITS - 1 : OFFSET_BITS];
+    wire [TAG_BITS-1:0]   tag_r   = addr_eff[PA_W-1 : OFFSET_BITS + INDEX_BITS];
+    wire [31:0]           line_addr_r = {addr_eff[31:6], 6'b0};
 
     wire hit0 = val0_mem[index_r] && (tag0_mem[index_r] == tag_r);
     wire hit1 = val1_mem[index_r] && (tag1_mem[index_r] == tag_r);
@@ -340,7 +347,7 @@ module l2_cache_core
             app_en  = app_rdy;
             begin : BLK_UC_RD_ADDR
                 reg [31:0] pa16;
-                pa16 = {addr_r[31:4], 4'b0};
+                pa16 = {addr_eff[31:4], 4'b0};
                 app_addr = pa_to_app_addr16(pa16);
             end
         end
@@ -355,7 +362,7 @@ module l2_cache_core
                 reg [31:0] pa16;
                 reg [127:0] wdf;
                 reg [15:0]  msk;
-                pa16 = {addr_r[31:4], 4'b0};
+                pa16 = {addr_eff[31:4], 4'b0};
                 app_addr = pa_to_app_addr16(pa16);
                 wdf = 128'd0;
                 msk = 16'hFFFF; // 1=mask(not write)

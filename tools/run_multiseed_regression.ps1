@@ -57,6 +57,7 @@ function Compile-Sim {
     "dcache.v",
     "L2_cache.v",
     "I_D_arbitration.v",
+    "branch_predictor.v",
     "uart_rx.v",
     "uart_bootloader.v",
     "MIG_DDR2_interface.v"
@@ -173,8 +174,8 @@ $csvPath = Join-Path $OutDir "summary.csv"
 $txtPath = Join-Path $OutDir "summary.txt"
 $rows | Export-Csv -NoTypeInformation -Path $csvPath
 
-$total = $rows.Count
-$passN = ($rows | Where-Object { $_.Status -eq "PASS" }).Count
+$total = @($rows).Count
+$passN = @($rows | Where-Object { $_.Status -eq "PASS" }).Count
 $failN = $total - $passN
 $dur = (Get-Date) - $startTs
 
@@ -189,7 +190,7 @@ $summary += ("Mode : RAND_MEM={0} ASSERT_EN={1}" -f $RandMem, $AssertEn)
 if ($failN -gt 0) {
   $summary += ""
   $summary += "Failed cases:"
-  foreach ($r in ($rows | Where-Object { $_.Status -eq "FAIL" })) {
+  foreach ($r in @($rows | Where-Object { $_.Status -eq "FAIL" })) {
     $summary += ("  TEST={0} SEED={1} LOG={2}" -f $r.Test, $r.Seed, $r.Log)
   }
 }

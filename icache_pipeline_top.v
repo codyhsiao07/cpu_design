@@ -312,10 +312,11 @@ module icache_pipeline_top #(
 
   // ================= IF =================
   wire [31:0] if_pc;
-  wire        redirect_valid_raw;
-  wire [31:0] redirect_pc_raw;
+  wire [31:0] ex_redirect_pc_raw;
   wire        redirect_valid;
   wire [31:0] redirect_pc;
+  wire        fe_redirect_valid;
+  wire [31:0] fe_redirect_pc;
   wire        stall_if, stall_id, stall_ex, stall_exmem;
   wire        flush_ifid, flush_idex;
   wire        ex_valid;
@@ -326,8 +327,8 @@ module icache_pipeline_top #(
     .clk              (core_clk),
     .rst_n            (core_rst_n),
     .stall_i          (stall_if),
-    .redirect_valid_i (redirect_valid),
-    .redirect_pc_i    (redirect_pc),
+    .redirect_valid_i (fe_redirect_valid),
+    .redirect_pc_i    (fe_redirect_pc),
     .pc_o             (if_pc)
   );
 
@@ -336,7 +337,7 @@ module icache_pipeline_top #(
   wire        fetch_req_valid;
   wire [31:0] fetch_req_addr  = if_pc;
   wire        fetch_req_ready;
-  wire        fetch_req_kill  = redirect_valid;
+  wire        fetch_req_kill  = fe_redirect_valid;
   wire        fetch_req_hs;
 
   wire        fetch_resp_valid;
@@ -378,8 +379,9 @@ module icache_pipeline_top #(
   wire resp_blocked = fetch_resp_valid & ~fetch_resp_ready;
   // On redirect cycle, suppress same-cycle fetch response into IF/ID.
   // This prevents stale wrong-path instruction from entering decode.
-  assign fetch_resp_valid_pipe = fetch_resp_valid & ~redirect_valid;
-  assign ifetch_err_o = fetch_resp_valid_pipe & fetch_resp_err;
+  assign fetch_resp_valid_pipe = fetch_resp_valid & ~fe_redirect_valid;
+  // Error should not be masked by redirect; expose any accepted fetch error event.
+  assign ifetch_err_o = fetch_resp_valid & fetch_resp_err;
 
   wire [6:0] fetch_opcode = fetch_resp_inst[6:0];
   wire fetch_is_ctrl = (fetch_opcode == 7'b1100011) || // BRANCH
@@ -389,14 +391,14 @@ module icache_pipeline_top #(
   assign fetch_resp_valid_filt = fetch_resp_valid_pipe && !fetch_resp_dup_nonctrl;
 
   // Do not issue new fetch request on redirect cycle.
-  assign fetch_req_valid = ~if_pending & ~stall_if_hdu & ~redirect_valid;
+  assign fetch_req_valid = ~if_pending & ~stall_if_hdu & ~fe_redirect_valid;
   assign fetch_req_hs = fetch_req_valid & fetch_req_ready & ~fetch_req_kill;
 
   always @(posedge core_clk or negedge core_rst_n) begin
     if (!core_rst_n) begin
       if_pending <= 1'b0;
     end else begin
-      if (redirect_valid) begin
+      if (fe_redirect_valid) begin
         if_pending <= 1'b0;
       end else if (fetch_resp_valid && fetch_resp_ready) begin
         // Response wins: same-cycle request+response means no outstanding left.
@@ -411,7 +413,7 @@ module icache_pipeline_top #(
     if (!core_rst_n) begin
       last_if_resp_pc_q <= 32'b0;
       last_if_resp_v_q  <= 1'b0;
-    end else if (redirect_valid) begin
+    end else if (fe_redirect_valid) begin
       last_if_resp_pc_q <= 32'b0;
       last_if_resp_v_q  <= 1'b0;
     end else if (fetch_resp_valid_filt && fetch_resp_ready) begin
@@ -490,6 +492,15 @@ module icache_pipeline_top #(
     .id_mem_funct3_o  (id_mem_funct3)
   );
 
+  // ID-stage control prediction:
+  // - Conditional branches use PHT direction.
+  // - JAL is always predicted taken.
+  // - JALR is resolved in EX (rs1 may require forwarding).
+  wire id_is_ctrl = id_branch | id_jal | id_jalr;
+  wire [31:0] id_ctrl_target = id_jalr ?
+                               ((id_rs1_val + id_imm) & 32'hFFFF_FFFE) :
+                               (id_pc + id_imm);
+
   // ================= ID/EX =================
   wire [31:0] ex_pc, ex_rs1_val, ex_rs2_val, ex_imm;
   wire [4:0]  ex_rs1, ex_rs2, ex_rd;
@@ -499,6 +510,27 @@ module icache_pipeline_top #(
   wire [1:0]  ex_wb_sel;
   wire        ex_shift_right, ex_shift_arith, ex_is_auipc, ex_is_lui;
   wire [2:0]  ex_mem_funct3;
+  wire        ex_pred_taken;
+  wire [31:0] ex_pred_target;
+  wire        ex_br_taken;
+
+  wire        bp_pred_taken;
+  wire        bp_update_valid = ex_valid & ex_branch & ~stall_ex;
+  wire        id_pred_taken = id_valid & id_is_ctrl &
+                              (id_jal | (id_branch & bp_pred_taken));
+  wire        id_pred_redirect_valid = id_pred_taken & ~stall_id;
+
+  branch_predictor #(
+    .PHT_BITS (8)
+  ) u_bp (
+    .clk            (core_clk),
+    .rst_n          (core_rst_n),
+    .pc_lookup_i    (id_pc),
+    .pred_taken_o   (bp_pred_taken),
+    .update_valid_i (bp_update_valid),
+    .pc_update_i    (ex_pc),
+    .actual_taken_i (ex_br_taken)
+  );
 
   id_ex_reg u_id_ex (
     .clk              (core_clk),
@@ -529,6 +561,8 @@ module icache_pipeline_top #(
     .id_is_auipc_i    (id_is_auipc),
     .id_is_lui_i      (id_is_lui),
     .id_mem_funct3_i  (id_mem_funct3),
+    .id_pred_taken_i  (id_pred_taken),
+    .id_pred_target_i (id_ctrl_target),
     .ex_mem_funct3_o  (ex_mem_funct3),
     .ex_shift_right_o (ex_shift_right),
     .ex_shift_arith_o (ex_shift_arith),
@@ -551,6 +585,8 @@ module icache_pipeline_top #(
     .ex_wb_sel_o      (ex_wb_sel),
     .ex_reg_write_o   (ex_reg_write),
     .ex_br_funct3_o   (ex_br_funct3),
+    .ex_pred_taken_o  (ex_pred_taken),
+    .ex_pred_target_o (ex_pred_target),
     .ex_valid_o       (ex_valid)
   );
 
@@ -612,15 +648,27 @@ module icache_pipeline_top #(
     .ex_alu_result_o   (ex_alu_result),
     .ex_store_data_o   (ex_store_data),
     .ex_pc4_o          (ex_pc4),
-    .ex_br_taken_o     (),//表示「這條 branch 是否成立」
-    .ex_br_target_o    (),//表示「branch 目標位址」，也就是 PC + imm
-    .redirect_valid_o  (redirect_valid_raw),
-    .redirect_pc_o     (redirect_pc_raw)
+    .ex_br_taken_o     (ex_br_taken),
+    .ex_br_target_o    (),//我已經在top做計算，不需要再ex才做target才做計算
+    .redirect_valid_o  (),
+    .redirect_pc_o     (ex_redirect_pc_raw)
   );
 
-  // Redirect from EX stage (raw timing).
-  assign redirect_valid = redirect_valid_raw & ex_valid;
-  assign redirect_pc    = redirect_pc_raw;
+  // EX validation for predicted control flow.
+  wire ex_actual_taken  = ex_jal | ex_jalr | ex_br_taken;
+  wire ex_is_ctrl_valid = ex_valid & (ex_branch | ex_jal | ex_jalr);
+  wire ex_pred_dir_miss = (ex_pred_taken != ex_actual_taken);
+  wire ex_pred_tgt_miss = ex_actual_taken & ex_pred_taken &
+                          (ex_pred_target != ex_redirect_pc_raw);
+
+  // redirect_valid/redirect_pc are for wrong-path recovery and flushing.
+  assign redirect_valid = ex_is_ctrl_valid & ~stall_ex &
+                          (ex_pred_dir_miss | ex_pred_tgt_miss);
+  assign redirect_pc    = ex_actual_taken ? ex_redirect_pc_raw : ex_pc4;
+
+  // Front-end redirect includes both speculative ID prediction and EX recovery.
+  assign fe_redirect_valid = redirect_valid | id_pred_redirect_valid;
+  assign fe_redirect_pc    = redirect_valid ? redirect_pc : id_ctrl_target;
 
   // ================= EX/MEM =================
   wire [31:0] mem_store_data;

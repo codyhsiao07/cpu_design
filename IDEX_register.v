@@ -36,6 +36,8 @@ module id_ex_reg (
   input         id_is_auipc_i,
   input         id_is_lui_i,
   input  [2:0]  id_mem_funct3_i,
+  input         id_pred_taken_i,
+  input  [31:0] id_pred_target_i,
   output [2:0]  ex_mem_funct3_o,
   output        ex_shift_right_o,
   output        ex_shift_arith_o,
@@ -61,6 +63,8 @@ module id_ex_reg (
   output [1:0]  ex_wb_sel_o,
   output        ex_reg_write_o,
   output [2:0]  ex_br_funct3_o,
+  output        ex_pred_taken_o,
+  output [31:0] ex_pred_target_o,
 
   output        ex_valid_o
 );
@@ -80,6 +84,8 @@ module id_ex_reg (
   reg        valid_q;
   reg [2:0]  mem_f3_q;
   reg        shift_right_q, shift_arith_q, is_auipc_q, is_lui_q;
+  reg        pred_taken_q;
+  reg [31:0] pred_target_q;
   reg        last_issue_valid_q;
   reg [31:0] last_issue_pc_q;
   reg [4:0]  last_issue_rd_q;
@@ -88,19 +94,9 @@ module id_ex_reg (
   reg        issue_epoch_q;
   reg        last_issue_epoch_q;
 
-  // Guard against duplicated decode issue caused by front-end replay artifacts:
-  // suppress only same-epoch, same-pc, same-rd, non-control WB ops.
-  wire duplicate_issue_wb_nonctrl =
-      (!flush_i) && (!stall_i) && id_valid_i &&
-      (id_pc_i < 32'h80000300) &&
-      ((id_rd_i == 5'd2) || (id_rd_i == 5'd9) || (id_rd_i == 5'd14) || (id_rd_i == 5'd15)) &&
-      last_issue_valid_q &&
-      (id_pc_i == last_issue_pc_q) &&
-      (id_rd_i == last_issue_rd_q) &&
-      (issue_epoch_q == last_issue_epoch_q) &&
-      id_reg_write_i && last_issue_regwr_q && (id_rd_i != 5'd0) &&
-      !(id_branch_i || id_jal_i || id_jalr_i) &&
-      last_issue_nonctrl_q;
+  // Duplicate suppression is disabled to avoid dropping legitimate repeated writes
+  // in loops/steady-state execution.
+  wire duplicate_issue_wb_nonctrl = 1'b0;
   wire kill_issue = flush_i | duplicate_issue_wb_nonctrl;
 
   // Next-state with stall/flush handling
@@ -130,6 +126,8 @@ module id_ex_reg (
   wire        shift_arith_d = kill_issue ? 1'b0   : (stall_i ? shift_arith_q : id_shift_arith_i);
   wire        is_auipc_d    = kill_issue ? 1'b0   : (stall_i ? is_auipc_q    : id_is_auipc_i);
   wire        is_lui_d      = kill_issue ? 1'b0   : (stall_i ? is_lui_q      : id_is_lui_i);
+  wire        pred_taken_d  = kill_issue ? 1'b0   : (stall_i ? pred_taken_q  : id_pred_taken_i);
+  wire [31:0] pred_target_d = kill_issue ? 32'b0  : (stall_i ? pred_target_q : id_pred_target_i);
 
   // Registers (async reset low)
   always @(posedge clk or negedge rst_n) begin
@@ -157,6 +155,8 @@ module id_ex_reg (
       is_auipc_q     <= 1'b0;
       is_lui_q       <= 1'b0;
       mem_f3_q       <= 3'b010;
+      pred_taken_q   <= 1'b0;
+      pred_target_q  <= 32'b0;
       last_issue_valid_q   <= 1'b0;
       last_issue_pc_q      <= 32'b0;
       last_issue_rd_q      <= 5'b0;
@@ -188,6 +188,8 @@ module id_ex_reg (
       is_auipc_q     <= is_auipc_d;
       is_lui_q       <= is_lui_d;
       mem_f3_q       <= mem_f3_d;
+      pred_taken_q   <= pred_taken_d;
+      pred_target_q  <= pred_target_d;
       if (redirect_valid_i)
         issue_epoch_q <= ~issue_epoch_q;
 
@@ -227,6 +229,8 @@ module id_ex_reg (
   assign ex_wb_sel_o      = wb_sel_q;
   assign ex_reg_write_o   = reg_write_q;
   assign ex_br_funct3_o   = br_funct3_q;
+  assign ex_pred_taken_o  = pred_taken_q;
+  assign ex_pred_target_o = pred_target_q;
 
   assign ex_valid_o       = valid_q;
   assign ex_shift_right_o = shift_right_q;

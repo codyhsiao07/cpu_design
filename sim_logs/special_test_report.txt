@@ -1,0 +1,13 @@
+Special Stress Verification Report (Final Retest)
+generated=2026-02-16 13:23:45
+
+Final retest results:
+- Baseline (test1..27, RAND_MEM=0, ASSERT_EN=1): 27/27 PASS
+- SuiteA deep mix (test24..27, 30 seeds, RAND_BP=35, I/D_MAX=15): 120/120 PASS
+- SuiteB extreme backpressure (test26..27, 20 seeds, RAND_BP=60, I/D_MAX=21): 40/40 PASS
+- SuiteC long mix (test20..22, 20 seeds, RAND_BP=30, I/D_MAX=15): 60/60 PASS
+- SuiteD error paths (test15..16, 30 seeds, RAND_BP=30, I/D_MAX=15): 60/60 PASS
+
+Assessment (software simulation scope):
+- Previously identified risks (extreme rsp watchdog liveness, test15 path) were rechecked and passing.
+- No FAIL/ASSERT/TIMEOUT observed in the final retest campaign above.
