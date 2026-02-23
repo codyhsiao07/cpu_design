@@ -254,3 +254,136 @@ scoop install make
 2. 執行 `make` 產生 `TEST_FILES/mem_os.mem`
 3. 執行 `make run-sim`（或手動 `vvp ... +MEMFILE=...`）
 4. 驗證通過後，再進一步走 FPGA 上板流程
+
+## 10. 模擬通過後的完整上板流程
+
+### 10.1 上板流程圖（Simulation -> FPGA）
+
+```mermaid
+flowchart TD
+  A[模擬全 PASS\nmake run-sim] --> B[確認上板輸入檔\nRTL + XDC + mem]
+  B --> C[建立 Vivado 專案]
+  C --> D[設定 Top = board_top.v]
+  D --> E[加入約束\nNexys-A7-100T-Master.xdc + DDR2/MIG 約束]
+  E --> F[Synthesis]
+  F --> G[Implementation]
+  G --> H[Timing 檢查]
+  H --> I{Timing 全通過?}
+  I -- 否 --> C
+  I -- 是 --> J[產生 bitstream]
+  J --> K[燒錄 FPGA]
+  K --> L[板上 smoke test\nstatus_o / ifetch_err]
+  L --> M[UART boot 載入程式\nuart_send_mem.py]
+  M --> N[功能驗證]
+```
+
+### 10.2 你需要準備的檔案
+
+- Top：`board_top.v`
+- 核心 RTL：主線所有 `.v`（與模擬一致）
+- 約束檔：`Nexys-A7-100T-Master.xdc`
+- 程式映像：`TEST_FILES/mem_os.mem`（由 `make` 產生）
+
+注意：`Nexys-A7-100T-Master.xdc` 目前已含時脈/重置/UART/status pins，但 DDR2 MIG 約束仍需補齊，否則無法完整 DDR2 bring-up。
+
+### 10.3 Vivado GUI 操作步驟（建議）
+
+1. `Create Project`（RTL project）
+2. `Add Sources`：加入主線 RTL 檔案
+3. `Add Constraints`：加入 `Nexys-A7-100T-Master.xdc`，並補齊 MIG/DDR2 對應約束
+4. `Set Top`：`board_top`
+5. `Run Synthesis`
+6. `Run Implementation`
+7. `Open Implemented Design` -> 看 Timing Summary（WNS/TNS）
+8. `Generate Bitstream`
+9. `Open Hardware Manager` -> `Program Device`
+
+### 10.4 板上 smoke test（第一輪）
+
+上電後先看三個訊號（XDC 已對應到 LED）：
+
+- `status_o[0]`：MIG init/calibration 完成（應為亮）
+- `status_o[1]`：boot 完成（應為亮，若 UART boot 結束）
+- `ifetch_err_o`：取指錯誤（正常應為不亮）
+
+若 `status_o[0]` 未亮：
+- 優先檢查 DDR2/MIG 約束、時脈與 reset 極性
+
+若 `ifetch_err_o` 亮：
+- 檢查程式載入位址、boot 流程、L2 位址映射與記憶體內容
+
+### 10.5 UART boot 載入流程（使用本專案工具）
+
+若你的 bitstream 使用 UART boot（`board_top` 預設 `UART_BOOT_EN=1`），可用：
+
+```powershell
+python uart_send_mem.py --port COM3 --baud 115200 --mem TEST_FILES/mem_os.mem
+```
+
+說明：
+- 請把 `COM3` 換成你的實際序列埠
+- `uart_send_mem.py` 會先送長度，再送 `.mem` 內容
+- 載入後觀察 `status_o[1]` 與程式行為
+- 正常情況下上傳完成後不需要再按 reset
+- 但若你按了 reset，通常要重新跑一次 `uart_send_mem.py`（bootloader 會回到等待接收狀態）
+
+### 10.6 上板前最終檢查清單
+
+- 模擬 PASS（至少 `make run-sim`）
+- `TEST_FILES/mem_os.mem` 為最新版本
+- Vivado timing 無負 slack
+- XDC 與 MIG/DDR2 約束完整
+- UART COM port/baud 設定正確
+- 板上 LED smoke test 正常（`status_o[0/1]`、`ifetch_err_o`）
+
+### 10.7 燒錄與執行重點（你問的重點）
+
+很多人第一次會混淆「燒錄 FPGA」與「載入程式」，這裡明確區分：
+
+- `.v`：RTL 原始碼（不能直接燒）
+- `.bit`：Vivado 將 RTL 實作後產生的 bitstream（這個才是燒進 FPGA）
+- `.mem`：你的軟體程式映像（由 `make` 產生，透過 UART boot 載入 DDR）
+
+所以正確流程是：
+
+1. **先建程式映像**（軟體）
+
+```powershell
+cd c:\cpu_design
+make
+```
+
+輸出：`TEST_FILES/mem_os.mem`
+
+2. **再燒 bitstream**（硬體）
+- 在 Vivado 以 `board_top.v` 為 top，完成 synth/impl，產生 `.bit`
+- 在 Hardware Manager `Program Device` 下載 `.bit` 到 FPGA
+
+3. **最後把 `.mem` 傳到板子**（執行程式）
+
+```powershell
+python uart_send_mem.py --port COM3 --baud 115200 --mem TEST_FILES/mem_os.mem
+```
+
+說明：
+- `COM3` 改成你的實際 UART 埠
+- 腳本會先送長度，再送 payload
+- 傳完後 CPU 會從 `0x80000000` 開始執行（本專案 linker 設定）
+
+4. **觀察板上狀態**
+- `status_o[0]`：MIG init 完成（應亮）
+- `status_o[1]`：boot 完成（UART 載入結束應亮）
+- `ifetch_err_o`：正常應不亮
+
+一句話總結：
+- 先用 `.v` 產生並燒錄 `.bit`（硬體）
+- 再用 `make` 產生 `.mem` 並透過 UART 載入（軟體）
+
+## 11. 備註
+
+若你先不做 UART boot，也可以先只驗證：
+- bitstream 可下載
+- reset 正常
+- `status_o[0]` 正常亮起（MIG init 完成）
+
+等 DDR2/MIG 與 UART 路徑穩定後，再進入完整 OS 功能驗證。
