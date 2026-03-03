@@ -3,7 +3,7 @@
 // Simple 2-bit saturating counter Pattern History Table (PHT)
 // PC-indexed, suitable for 5-stage pipeline
 // ================================================================
-
+//,,,
 module branch_predictor #(
   parameter PHT_BITS = 8   // number of entries = 2^PHT_BITS
 )(
