@@ -60,7 +60,7 @@ function Compile-Sim {
     "branch_predictor.v",
     "uart_rx.v",
     "uart_bootloader.v",
-    "MIG_DDR2_interface.v"
+    "MIG_DDR3_interface.v"
   )
   & $IverilogExe "-g2005-sv" "-o" $OutSimExe @src
   if ($LASTEXITCODE -ne 0) {

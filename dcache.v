@@ -88,7 +88,7 @@ module dcache_blocking
     localparam integer LINE_BITS   = LINE_BYTES*8;//一條 cache line 的位元數
     localparam integer SETS        = (CACHE_BYTES/(LINE_BYTES*WAYS)); // 128KB/(64B*2)=1024 //以註解中的數值：128KB ÷ (64B × 2-way) = 1024 sets
     localparam integer OFFSET_BITS = 6;   // log2(64B)
-    localparam integer INDEX_BITS  = 10;  // log2(1024)
+    localparam integer INDEX_BITS  = $clog2(SETS);
     localparam integer TAG_BITS    = ADDR_W - OFFSET_BITS - INDEX_BITS;
 
     // ---------------- L2 commands (example) ----------------
@@ -135,13 +135,12 @@ module dcache_blocking
     reg [TAG_BITS-1:0]    tag0_mem [0:SETS-1];
     reg                  val0_mem [0:SETS-1];
     reg                  dir0_mem [0:SETS-1];
-    reg [LINE_BITS-1:0]   data0_mem [0:SETS-1];
-
+    (* ram_style = "block" *) reg [LINE_BITS-1:0] data0_mem [0:SETS-1];//(* ram_style = "block" *) 給 Vivado 一個提示：這個 array 請優先推論成 Block RAM
     // Way 1
     reg [TAG_BITS-1:0]    tag1_mem [0:SETS-1];
     reg                  val1_mem [0:SETS-1];
     reg                  dir1_mem [0:SETS-1];
-    reg [LINE_BITS-1:0]   data1_mem [0:SETS-1];
+    (* ram_style = "block" *) reg [LINE_BITS-1:0] data1_mem [0:SETS-1];
 
     // 1-bit LRU per set: lru=0 => way0 is LRU(victim), lru=1 => way1 is LRU(victim)
     reg lru_mem [0:SETS-1];
@@ -327,10 +326,12 @@ module dcache_blocking
                 dir0_mem[i] <= 1'b0;
                 dir1_mem[i] <= 1'b0;
                 lru_mem[i]  <= 1'b0;
+`ifndef SYNTHESIS
                 tag0_mem[i] <= {TAG_BITS{1'b0}};
                 tag1_mem[i] <= {TAG_BITS{1'b0}};
                 data0_mem[i] <= {LINE_BITS{1'b0}};
                 data1_mem[i] <= {LINE_BITS{1'b0}};
+`endif
             end
         end else begin
             // defaults each cycle

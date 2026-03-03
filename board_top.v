@@ -12,15 +12,15 @@ module board_top #(
   parameter [31:0]  UART_BOOT_BASE= 32'h8000_0000,
   parameter [31:0]  RESET_PC      = 32'h8000_0000
 ) (
-  input                   clk_in,    // optional (unused when USE_MIG=1)
   input                   rst_n,
   input                   uart_rx_i,
+  output                  uart_tx_o,
 
   // DDR2 MIG interface
   inout  [15:0]           ddr2_dq,
   inout  [1:0]            ddr2_dqs_n,
   inout  [1:0]            ddr2_dqs_p,
-  output [13:0]           ddr2_addr,
+  output [12:0]           ddr2_addr,
   output [2:0]            ddr2_ba,
   output                  ddr2_ras_n,
   output                  ddr2_cas_n,
@@ -31,9 +31,7 @@ module board_top #(
   output [0:0]            ddr2_cs_n,
   output [1:0]            ddr2_dm,
   output [0:0]            ddr2_odt,
-  input                   sys_clk_p,
-  input                   sys_clk_n,
-  input                   clk_ref_i,
+  input                   sys_clk_i,
 
   // Status outputs
   output [1:0]            status_o,
@@ -75,6 +73,20 @@ module board_top #(
   wire [31:0]           wb_wdata;
   wire                  init_calib_complete;
   wire                  boot_done;
+  wire                  clk_wiz_locked;
+  wire                  aux_clk_100;
+  wire                  mig_ref_clk;
+  wire                  rst_n_int;
+
+  clock_bridge u_clock_if (
+    .clk_in   (sys_clk_i),
+    .rst      (~rst_n),
+    .clk_sys_o(aux_clk_100),
+    .clk_ref_o(mig_ref_clk),
+    .locked_o (clk_wiz_locked)
+  );
+
+  assign rst_n_int = rst_n & clk_wiz_locked;
 
   icache_pipeline_top #(
     .ADDR_WIDTH    (ADDR_WIDTH),
@@ -86,9 +98,10 @@ module board_top #(
     .UART_BOOT_BASE(UART_BOOT_BASE),
     .RESET_PC      (RESET_PC)
   ) u_core (
-    .clk          (clk_in),
-    .rst_n        (rst_n),
+    .clk          (aux_clk_100),
+    .rst_n        (rst_n_int),
     .uart_rx_i    (uart_rx_i),
+    .uart_tx_o    (uart_tx_o),
 
     .ddr2_dq      (ddr2_dq),
     .ddr2_dqs_n   (ddr2_dqs_n),
@@ -104,9 +117,8 @@ module board_top #(
     .ddr2_cs_n    (ddr2_cs_n),
     .ddr2_dm      (ddr2_dm),
     .ddr2_odt     (ddr2_odt),
-    .sys_clk_p    (sys_clk_p),
-    .sys_clk_n    (sys_clk_n),
-    .clk_ref_i    (clk_ref_i),
+    .sys_clk_i    (aux_clk_100),
+    .clk_ref_i    (mig_ref_clk),
     .init_calib_complete (init_calib_complete),
 
     .l2_req_valid (l2_req_valid),

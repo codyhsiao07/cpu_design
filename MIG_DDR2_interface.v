@@ -104,7 +104,7 @@
 
 //  \   \         Application        : MIG
 
-//  /   /         Filename           : mig_7series_0.v
+//  /   /         Filename           : mig.v
 
 // /___/   /\     Date Last Modified : $Date: 2011/06/02 08:35:03 $
 
@@ -138,7 +138,7 @@
 
 
 
-module mig_7series_0 (
+module mig (
 
    // Inouts
 
@@ -150,7 +150,7 @@ module mig_7series_0 (
 
    // Outputs
 
-   output [13:0]                       ddr2_addr,
+   output [12:0]                       ddr2_addr,
 
    output [2:0]                      ddr2_ba,
 
@@ -174,11 +174,9 @@ module mig_7series_0 (
 
    // Inputs
 
-   // Differential system clocks
+   // Single-ended system clock
 
-   input                                        sys_clk_p,
-
-   input                                        sys_clk_n,
+   input                                        sys_clk_i,
 
    // Single-ended iodelayctrl clk (reference clock)
 
@@ -186,7 +184,7 @@ module mig_7series_0 (
 
    // user interface signals
 
-   input [27:0]                       app_addr,
+   input [26:0]                       app_addr,
 
    input [2:0]                                  app_cmd,
 
@@ -236,7 +234,7 @@ module mig_7series_0 (
 
 // Start of IP top instance
 
-  mig_7series_0_mig u_mig_7series_0_mig (
+  mig_mig u_mig_mig (
 
 
 
@@ -322,9 +320,7 @@ module mig_7series_0 (
 
     // System Clock Ports
 
-    .sys_clk_p                       (sys_clk_p),
-
-    .sys_clk_n                       (sys_clk_n),
+    .sys_clk_i                       (sys_clk_i),
 
     // Reference Clock Ports
 

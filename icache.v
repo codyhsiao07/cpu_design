@@ -63,8 +63,8 @@ module i_cache
     // ----------------------------
     // Cache arrays (simple reg arrays)
     // ----------------------------
-    reg [LINE_BITS-1:0] data_way0 [0:NUM_SETS-1];
-    reg [LINE_BITS-1:0] data_way1 [0:NUM_SETS-1];
+    (* ram_style = "block" *) reg [LINE_BITS-1:0] data_way0 [0:NUM_SETS-1];
+    (* ram_style = "block" *) reg [LINE_BITS-1:0] data_way1 [0:NUM_SETS-1];
 
     reg [TAG_BITS-1:0]  tag_way0  [0:NUM_SETS-1];
     reg [TAG_BITS-1:0]  tag_way1  [0:NUM_SETS-1];
@@ -206,7 +206,7 @@ module i_cache
     // Main sequential logic
     // ----------------------------
     integer i;
-    always @(posedge clk or negedge rst_n) begin
+    always @(posedge clk) begin
         if (!rst_n) begin
             // reset
             state <= ST_IDLE;
@@ -565,8 +565,6 @@ module i_cache
     end
 
 endmodule
-
-
 
 
 

@@ -12,12 +12,13 @@ module icache_pipeline_tb;
   reg                   clk;
   reg                   rst_n;
   reg                   uart_rx;
+  wire                  uart_tx;
 
   // DDR2 MIG (USE_MIG=1 uses sim model below)
   wire [15:0]           ddr2_dq;
   wire [1:0]            ddr2_dqs_n;
   wire [1:0]            ddr2_dqs_p;
-  wire [13:0]           ddr2_addr;
+  wire [12:0]           ddr2_addr;
   wire [2:0]            ddr2_ba;
   wire                  ddr2_ras_n;
   wire                  ddr2_cas_n;
@@ -29,8 +30,7 @@ module icache_pipeline_tb;
   wire [1:0]            ddr2_dm;
   wire [0:0]            ddr2_odt;
   wire                  init_calib_complete;
-  wire                  sys_clk_p;
-  wire                  sys_clk_n;
+  wire                  sys_clk_i;
   wire                  clk_ref_i;
 
   // I$ L2 interface
@@ -80,6 +80,7 @@ module icache_pipeline_tb;
     .clk          (clk),
     .rst_n        (rst_n),
     .uart_rx_i    (uart_rx),
+    .uart_tx_o    (uart_tx),
     .ddr2_dq      (ddr2_dq),
     .ddr2_dqs_n   (ddr2_dqs_n),
     .ddr2_dqs_p   (ddr2_dqs_p),
@@ -94,8 +95,7 @@ module icache_pipeline_tb;
     .ddr2_cs_n    (ddr2_cs_n),
     .ddr2_dm      (ddr2_dm),
     .ddr2_odt     (ddr2_odt),
-    .sys_clk_p    (sys_clk_p),
-    .sys_clk_n    (sys_clk_n),
+    .sys_clk_i    (sys_clk_i),
     .clk_ref_i    (clk_ref_i),
     .init_calib_complete (init_calib_complete),
     .l2_req_valid (l2_req_valid),
@@ -131,8 +131,7 @@ module icache_pipeline_tb;
 
   // Clock
   always #5 clk = ~clk;
-  assign sys_clk_p = clk;
-  assign sys_clk_n = ~clk;
+  assign sys_clk_i = clk;
   assign clk_ref_i = clk;
 
   // Shared memory for I$/D$
@@ -1565,8 +1564,8 @@ endmodule
 // - app_wdf_mask: 1=mask (no write), 0=write
 // - Fixed 2-cycle read latency, always-ready interface
 // ----------------------------------------------------------------------------
-module mig_7series_0_mig (
-  output [13:0]                       ddr2_addr,
+module mig_mig (
+  output [12:0]                       ddr2_addr,
   output [2:0]                        ddr2_ba,
   output                              ddr2_cas_n,
   output [0:0]                        ddr2_ck_n,
@@ -1581,7 +1580,7 @@ module mig_7series_0_mig (
   output [0:0]                        ddr2_cs_n,
   output [1:0]                        ddr2_dm,
   output [0:0]                        ddr2_odt,
-  input  [27:0]                       app_addr,
+  input  [26:0]                       app_addr,
   input  [2:0]                        app_cmd,
   input                               app_en,
   input  [127:0]                      app_wdf_data,
@@ -1601,9 +1600,9 @@ module mig_7series_0_mig (
   output                              ui_clk,
   output reg                          ui_clk_sync_rst,
   input  [15:0]                       app_wdf_mask,
-  input                               sys_clk_p,
-  input                               sys_clk_n,
+  input                               sys_clk_i,
   input                               clk_ref_i,
+  output [11:0]                       device_temp,
   input                               sys_rst
 );
   localparam integer MEM_BYTES = 1<<20;
@@ -1749,23 +1748,24 @@ module mig_7series_0_mig (
   endtask
 
   // DDR2 pins are unused in this model
-  assign ddr2_addr = 14'd0;
-  assign ddr2_ba   = 3'd0;
-  assign ddr2_cas_n = 1'b1;
-  assign ddr2_ck_n  = 1'b0;
-  assign ddr2_ck_p  = 1'b0;
-  assign ddr2_cke   = 1'b0;
-  assign ddr2_ras_n = 1'b1;
-  assign ddr2_we_n  = 1'b1;
-  assign ddr2_cs_n  = 1'b1;
-  assign ddr2_dm    = 2'b00;
-  assign ddr2_odt   = 1'b0;
-  assign ddr2_dq    = 16'hzzzz;
-  assign ddr2_dqs_n = 2'bzz;
-  assign ddr2_dqs_p = 2'bzz;
+  assign ddr2_addr    = 13'd0;
+  assign ddr2_ba      = 3'd0;
+  assign ddr2_cas_n   = 1'b1;
+  assign ddr2_ck_n    = 1'b0;
+  assign ddr2_ck_p    = 1'b0;
+  assign ddr2_cke     = 1'b0;
+  assign ddr2_ras_n   = 1'b1;
+  assign ddr2_we_n    = 1'b1;
+  assign ddr2_cs_n    = 1'b1;
+  assign ddr2_dm      = 2'b00;
+  assign ddr2_odt     = 1'b0;
+  assign ddr2_dq      = 16'hzzzz;
+  assign ddr2_dqs_n   = 2'bzz;
+  assign ddr2_dqs_p   = 2'bzz;
+  assign device_temp  = 12'd0;
 
-  // Use sys_clk_p as UI clock
-  assign ui_clk = sys_clk_p;
+  // Use sys_clk_i as UI clock
+  assign ui_clk = sys_clk_i;
   assign init_calib_complete = ~sys_rst;
 
   initial begin
@@ -1914,7 +1914,7 @@ module mig_7series_0_mig (
   end
 
   function [127:0] rd128;
-    input [27:0] a16;
+    input [26:0] a16;
     integer i;
     reg [31:0] base;
     begin
@@ -1925,7 +1925,7 @@ module mig_7series_0_mig (
   endfunction
 
   task wr128;
-    input [27:0] a16;
+    input [26:0] a16;
     input [127:0] data;
     input [15:0] mask;
     integer i;
@@ -1939,7 +1939,7 @@ module mig_7series_0_mig (
     end
   endtask
 
-  reg [27:0] rd_addr_d0, rd_addr_d1;
+  reg [26:0] rd_addr_d0, rd_addr_d1;
   reg        rd_valid_d0, rd_valid_d1;
 
   always @(posedge ui_clk or posedge sys_rst) begin
@@ -1951,8 +1951,8 @@ module mig_7series_0_mig (
       app_rd_data      <= 128'd0;
       rd_valid_d0      <= 1'b0;
       rd_valid_d1      <= 1'b0;
-      rd_addr_d0       <= 28'd0;
-      rd_addr_d1       <= 28'd0;
+      rd_addr_d0       <= 27'd0;
+      rd_addr_d1       <= 27'd0;
       app_sr_active    <= 1'b0;
       app_ref_ack      <= 1'b0;
       app_zq_ack       <= 1'b0;
@@ -2032,3 +2032,4 @@ module mig_7series_0_mig (
   end
 
 endmodule
+

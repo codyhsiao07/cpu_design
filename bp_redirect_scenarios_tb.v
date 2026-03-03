@@ -7,12 +7,13 @@ module bp_redirect_scenarios_tb;
   reg clk = 1'b0;
   reg rst_n = 1'b0;
   reg uart_rx_i = 1'b1;
+  wire uart_tx_o;
 
   // DDR/MIG ports (unused when USE_MIG=0)
   wire [15:0] ddr2_dq;
   wire [1:0]  ddr2_dqs_n;
   wire [1:0]  ddr2_dqs_p;
-  wire [13:0] ddr2_addr;
+  wire [12:0] ddr2_addr;
   wire [2:0]  ddr2_ba;
   wire        ddr2_ras_n;
   wire        ddr2_cas_n;
@@ -23,8 +24,7 @@ module bp_redirect_scenarios_tb;
   wire [0:0]  ddr2_cs_n;
   wire [1:0]  ddr2_dm;
   wire [0:0]  ddr2_odt;
-  reg         sys_clk_p = 1'b0;
-  reg         sys_clk_n = 1'b1;
+  reg         sys_clk_i = 1'b0;
   reg         clk_ref_i = 1'b0;
   wire        init_calib_complete;
 
@@ -73,6 +73,7 @@ module bp_redirect_scenarios_tb;
     .clk                (clk),
     .rst_n              (rst_n),
     .uart_rx_i          (uart_rx_i),
+    .uart_tx_o          (uart_tx_o),
     .ddr2_dq            (ddr2_dq),
     .ddr2_dqs_n         (ddr2_dqs_n),
     .ddr2_dqs_p         (ddr2_dqs_p),
@@ -87,8 +88,7 @@ module bp_redirect_scenarios_tb;
     .ddr2_cs_n          (ddr2_cs_n),
     .ddr2_dm            (ddr2_dm),
     .ddr2_odt           (ddr2_odt),
-    .sys_clk_p          (sys_clk_p),
-    .sys_clk_n          (sys_clk_n),
+    .sys_clk_i          (sys_clk_i),
     .clk_ref_i          (clk_ref_i),
     .init_calib_complete(init_calib_complete),
     .l2_req_valid       (l2_req_valid),
@@ -124,8 +124,7 @@ module bp_redirect_scenarios_tb;
 
   always #5 clk = ~clk;
   always @(*) begin
-    sys_clk_p = clk;
-    sys_clk_n = ~clk;
+    sys_clk_i = clk;
     clk_ref_i = clk;
   end
 
@@ -277,4 +276,3 @@ module bp_redirect_scenarios_tb;
   end
 
 endmodule
-

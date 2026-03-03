@@ -51,7 +51,7 @@ module l2_cache_top
     output                 d_rsp_last,
 
     // ---------- MIG Native App Interface ----------
-    output [27:0]          app_addr,
+    output [26:0]          app_addr,
     output [2:0]           app_cmd,
     output                 app_en,
     output [127:0]         app_wdf_data,

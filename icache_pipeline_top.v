@@ -1,4 +1,11 @@
 `timescale 1ns/1ps
+`ifndef PRODUCTION_BUILD
+`ifdef SYNTHESIS
+`ifndef FAST_SYNTH
+`define FAST_SYNTH
+`endif
+`endif
+`endif
 // icache_pipeline_top.v
 // Minimal 5-stage RV32I pipeline wired to i_cache via icache_top.
 // Data memory is a tiny zero-wait-state RAM stub for basic loads/stores.
@@ -18,12 +25,13 @@ module icache_pipeline_top #(
   input                   clk,
   input                   rst_n,
   input                   uart_rx_i,
+  output                  uart_tx_o,
 
   // DDR2 MIG interface (used when USE_MIG=1)
   inout  [15:0]            ddr2_dq,
   inout  [1:0]             ddr2_dqs_n,
   inout  [1:0]             ddr2_dqs_p,
-  output [13:0]            ddr2_addr,
+  output [12:0]            ddr2_addr,
   output [2:0]             ddr2_ba,
   output                   ddr2_ras_n,
   output                   ddr2_cas_n,
@@ -34,8 +42,7 @@ module icache_pipeline_top #(
   output [0:0]             ddr2_cs_n,
   output [1:0]             ddr2_dm,
   output [0:0]             ddr2_odt,
-  input                    sys_clk_p,
-  input                    sys_clk_n,
+  input                    sys_clk_i,
   input                    clk_ref_i,
   output                   init_calib_complete,
 
@@ -108,7 +115,7 @@ module icache_pipeline_top #(
   generate
     if (USE_MIG) begin : GEN_MIG
       // MIG app interface
-      wire [27:0]  app_addr;
+      wire [26:0]  app_addr;
       wire [2:0]   app_cmd;
       wire         app_en;
       wire [127:0] app_wdf_data;
@@ -125,7 +132,7 @@ module icache_pipeline_top #(
       wire         app_zq_ack;
 
       // L2 app interface
-      wire [27:0]  app_addr_l2;
+      wire [26:0]  app_addr_l2;
       wire [2:0]   app_cmd_l2;
       wire         app_en_l2;
       wire [127:0] app_wdf_data_l2;
@@ -134,7 +141,7 @@ module icache_pipeline_top #(
       wire         app_wdf_wren_l2;
 
       // Bootloader app interface
-      wire [27:0]  app_addr_boot;
+      wire [26:0]  app_addr_boot;
       wire [2:0]   app_cmd_boot;
       wire         app_en_boot;
       wire [127:0] app_wdf_data_boot;
@@ -144,7 +151,7 @@ module icache_pipeline_top #(
       wire         boot_active_w;
 
       // MIG instance
-      mig_7series_0 u_mig (
+      mig u_mig (
         .ddr2_dq (ddr2_dq),
         .ddr2_dqs_n (ddr2_dqs_n),
         .ddr2_dqs_p (ddr2_dqs_p),
@@ -159,8 +166,7 @@ module icache_pipeline_top #(
         .ddr2_cs_n (ddr2_cs_n),
         .ddr2_dm (ddr2_dm),
         .ddr2_odt (ddr2_odt),
-        .sys_clk_p (sys_clk_p),
-        .sys_clk_n (sys_clk_n),
+        .sys_clk_i (sys_clk_i),
         .clk_ref_i (clk_ref_i),
         .app_addr (app_addr),
         .app_cmd (app_cmd),
@@ -266,7 +272,7 @@ module icache_pipeline_top #(
         );
         assign boot_active_w = ~boot_done_int;
       end else begin : GEN_NO_UART_BOOT
-        assign app_addr_boot     = 28'd0;
+        assign app_addr_boot     = 27'd0;
         assign app_cmd_boot      = 3'd0;
         assign app_en_boot       = 1'b0;
         assign app_wdf_data_boot = 128'd0;
@@ -349,8 +355,30 @@ module icache_pipeline_top #(
   wire        fetch_resp_err;
   reg  [31:0] last_if_resp_pc_q;
   reg         last_if_resp_v_q;
+  wire        stall_if_hdu, stall_id_hdu, stall_ex_hdu, stall_exmem_hdu;
 
-  icache_top u_icache (
+`ifdef FAST_SIM
+  localparam integer I_CACHE_BYTES_CFG = 8192; // fast simulation
+  localparam integer I_CACHE_INDEX_BITS_CFG = 6;
+`elsif FAST_SYNTH
+  localparam integer I_CACHE_BYTES_CFG = 8192; // fast synthesis
+  localparam integer I_CACHE_INDEX_BITS_CFG = 6;
+`else
+  localparam integer I_CACHE_BYTES_CFG = 65536; // production default (64KiB)
+  localparam integer I_CACHE_INDEX_BITS_CFG = 9;
+`endif
+  localparam integer I_CACHE_TAG_BITS_CFG = ADDR_WIDTH - 6 - I_CACHE_INDEX_BITS_CFG;
+
+  icache_top #(
+    .ADDR_WIDTH (ADDR_WIDTH),
+    .L2_DATA_W  (L2_DATA_W),
+    .CACHE_BYTES(I_CACHE_BYTES_CFG),
+    .LINE_BYTES (64),
+    .NUM_WAYS   (2),
+    .OFFSET_BITS(6),
+    .INDEX_BITS (I_CACHE_INDEX_BITS_CFG),
+    .TAG_BITS   (I_CACHE_TAG_BITS_CFG)
+  ) u_icache (
     .clk              (core_clk),
     .rst_n            (core_rst_n),
     .fetch_req_valid_i  (fetch_req_valid),
@@ -375,7 +403,10 @@ module icache_pipeline_top #(
     .l2_rsp_err         (i_l2_rsp_err_int)
   );
 
-  wire req_blocked = fetch_req_valid & ~fetch_req_ready;
+  // Keep request valid independent from redirect. Redirect still blocks the
+  // handshake through fetch_req_kill, but removing it from valid shortens the
+  // critical control path that feeds the I$ stage-1 enable.
+  wire req_blocked = fetch_req_valid & ~fetch_req_ready & ~fetch_req_kill;
   wire resp_blocked = fetch_resp_valid & ~fetch_resp_ready;
   // On redirect cycle, suppress same-cycle fetch response into IF/ID.
   // This prevents stale wrong-path instruction from entering decode.
@@ -390,8 +421,10 @@ module icache_pipeline_top #(
   wire fetch_resp_dup_nonctrl = 1'b0;
   assign fetch_resp_valid_filt = fetch_resp_valid_pipe && !fetch_resp_dup_nonctrl;
 
-  // Do not issue new fetch request on redirect cycle.
-  assign fetch_req_valid = ~if_pending & ~stall_if_hdu & ~fe_redirect_valid;
+  // Redirect cancels the request via fetch_req_kill. Do not fold redirect into
+  // fetch_req_valid itself; that duplicate gating created the worst setup path
+  // into the I$ request accept/CE logic.
+  assign fetch_req_valid = ~if_pending & ~stall_if_hdu;
   assign fetch_req_hs = fetch_req_valid & fetch_req_ready & ~fetch_req_kill;
 
   always @(posedge core_clk or negedge core_rst_n) begin
@@ -713,6 +746,7 @@ module icache_pipeline_top #(
   wire        dmem_rvalid_i;
   wire [31:0] dmem_rdata_i;
   wire        store_done_i;
+  wire        dmem_rsp_err_i;
 
   mem_stage u_mem (
     .clk              (core_clk),
@@ -738,6 +772,129 @@ module icache_pipeline_top #(
     .mem_load_active_o(mem_load_active)
   );
 
+  // UART MMIO region (0x4000_0000..0x4000_FFFF):
+  //   0x4000_0000 write -> TX data (lowest asserted byte lane)
+  //   0x4000_0004 read  -> TX status, bit0 = tx_ready
+  //   0x4000_0008 read  -> RX data, low byte = received char, read pops one byte
+  //   0x4000_000C read  -> RX status, bit0 = rx_valid, bit1 = rx_overrun
+  // Other addresses in the region return an error response.
+  localparam [31:0] UART_MMIO_BASE   = 32'h4000_0000;
+  localparam [31:0] UART_MMIO_TX_STATUS = 32'h4000_0004;
+  localparam [31:0] UART_MMIO_RX_DATA   = 32'h4000_0008;
+  localparam [31:0] UART_MMIO_RX_STATUS = 32'h4000_000C;
+
+  wire        uart_mmio_hit = (dmem_addr_o[31:16] == UART_MMIO_BASE[31:16]);
+  wire        uart_mmio_sel_tx_data =
+      (dmem_addr_o[31:2] == UART_MMIO_BASE[31:2]);
+  wire        uart_mmio_sel_tx_status =
+      (dmem_addr_o[31:2] == UART_MMIO_TX_STATUS[31:2]);
+  wire        uart_mmio_sel_rx_data =
+      (dmem_addr_o[31:2] == UART_MMIO_RX_DATA[31:2]);
+  wire        uart_mmio_sel_rx_status =
+      (dmem_addr_o[31:2] == UART_MMIO_RX_STATUS[31:2]);
+  wire        uart_mmio_addr_valid =
+      uart_mmio_sel_tx_data |
+      uart_mmio_sel_tx_status |
+      uart_mmio_sel_rx_data |
+      uart_mmio_sel_rx_status;
+  wire        uart_mmio_req_valid = dmem_req_o & uart_mmio_hit;
+
+  wire [7:0] uart_mmio_wbyte =
+      dmem_wstrb_o[0] ? dmem_wdata_o[7:0]   :
+      dmem_wstrb_o[1] ? dmem_wdata_o[15:8]  :
+      dmem_wstrb_o[2] ? dmem_wdata_o[23:16] :
+                        dmem_wdata_o[31:24];
+  wire       uart_mmio_has_byte = |dmem_wstrb_o;
+
+  wire       uart_tx_busy;
+  reg  [7:0] uart_tx_data_q;
+  reg        uart_tx_en_q;
+  reg        uart_rx_ff1_q;
+  reg        uart_rx_ff2_q;
+  wire [7:0] uart_rx_data_w;
+  wire       uart_rx_valid_w;
+  reg  [7:0] uart_rx_data_q;
+  reg        uart_rx_valid_q;
+  reg        uart_rx_overrun_q;
+
+  wire uart_mmio_ready =
+      ~uart_mmio_req_valid ? 1'b0 :
+      (dmem_we_o && uart_mmio_sel_tx_data && uart_mmio_has_byte) ? ~uart_tx_busy :
+      1'b1;
+  wire uart_mmio_fire = uart_mmio_req_valid & uart_mmio_ready;
+  wire uart_mmio_write_err =
+      dmem_we_o & (~uart_mmio_sel_tx_data | ~uart_mmio_has_byte);
+  wire uart_mmio_read_err =
+      (~dmem_we_o) & (~uart_mmio_addr_valid);
+  wire uart_mmio_rsp_err = uart_mmio_fire & (uart_mmio_write_err | uart_mmio_read_err);
+  wire [31:0] uart_mmio_rsp_rdata =
+      uart_mmio_sel_tx_status ? {31'd0, ~uart_tx_busy} :
+      uart_mmio_sel_rx_data   ? {24'd0, uart_rx_data_q} :
+      uart_mmio_sel_rx_status ? {30'd0, uart_rx_overrun_q, uart_rx_valid_q} :
+      32'd0;
+  wire uart_mmio_rsp_valid = uart_mmio_fire;
+  wire uart_mmio_tx_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_tx_data & uart_mmio_has_byte;
+  wire uart_mmio_rx_pop =
+      uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_data;
+  wire uart_mmio_rx_status_read =
+      uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_status;
+
+  always @(posedge core_clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
+      uart_tx_data_q <= 8'h00;
+      uart_tx_en_q   <= 1'b0;
+      uart_rx_ff1_q  <= 1'b1;
+      uart_rx_ff2_q  <= 1'b1;
+      uart_rx_data_q <= 8'h00;
+      uart_rx_valid_q <= 1'b0;
+      uart_rx_overrun_q <= 1'b0;
+    end else begin
+      uart_tx_en_q <= uart_mmio_tx_fire;
+      uart_rx_ff1_q <= uart_rx_i;
+      uart_rx_ff2_q <= uart_rx_ff1_q;
+      if (uart_mmio_tx_fire) begin
+        uart_tx_data_q <= uart_mmio_wbyte;
+      end
+      if (uart_rx_valid_w) begin
+        if (!uart_rx_valid_q || uart_mmio_rx_pop) begin
+          uart_rx_data_q  <= uart_rx_data_w;
+          uart_rx_valid_q <= 1'b1;
+        end else begin
+          uart_rx_overrun_q <= 1'b1;
+        end
+      end else if (uart_mmio_rx_pop) begin
+        uart_rx_valid_q <= 1'b0;
+      end
+      if (uart_mmio_rx_status_read) begin
+        uart_rx_overrun_q <= 1'b0;
+      end
+    end
+  end
+
+  uart_rx #(
+    .CLK_HZ (UART_CLK_HZ),
+    .BAUD   (UART_BAUD)
+  ) u_uart_rx_mmio (
+    .clk     (core_clk),
+    .rst_n   (core_rst_n),
+    .rx_i    (uart_rx_ff2_q),
+    .data_o  (uart_rx_data_w),
+    .valid_o (uart_rx_valid_w)
+  );
+
+  uart_tx #(
+    .CLK_HZ (UART_CLK_HZ),
+    .BAUD   (UART_BAUD)
+  ) u_uart_tx (
+    .data_in (uart_tx_data_q),
+    .Tx_en   (uart_tx_en_q),
+    .clk_50m (core_clk),
+    .rst_n   (core_rst_n),
+    .Tx      (uart_tx_o),
+    .Tx_busy (uart_tx_busy)
+  );
+
   // D$ instance (blocking cache)
   wire        dcache_cpu_req_ready;
   wire        dcache_cpu_rsp_valid;
@@ -745,6 +902,14 @@ module icache_pipeline_top #(
   wire        dcache_cpu_rsp_err;
   wire        dcache_cpu_rsp_ready = 1'b1;
   wire [1:0]  dcache_req_size = mem_size[1:0];
+  wire        dcache_cpu_req_valid = dmem_req_o & ~uart_mmio_hit;
+`ifdef FAST_SIM
+  localparam integer D_CACHE_BYTES_CFG = 8192;   // fast simulation
+`elsif FAST_SYNTH
+  localparam integer D_CACHE_BYTES_CFG = 8192;   // fast synthesis
+`else
+  localparam integer D_CACHE_BYTES_CFG = 131072; // production default (128KiB)
+`endif
 
   dcache_blocking #(
     .ADDR_W     (32),
@@ -752,12 +917,12 @@ module icache_pipeline_top #(
     .CPU_STRB_W (4),
     .BUS_W      (L2_DATA_W),
     .LINE_BYTES (64),
-    .CACHE_BYTES(131072),
+    .CACHE_BYTES(D_CACHE_BYTES_CFG),
     .WAYS       (2)
   ) u_dcache (
     .clk              (core_clk),
     .rst_n            (core_rst_n),
-    .cpu_req_valid   (dmem_req_o),
+    .cpu_req_valid   (dcache_cpu_req_valid),
     .cpu_req_ready   (dcache_cpu_req_ready),
     .cpu_req_addr    (dmem_addr_o),
     .cpu_req_we      (dmem_we_o),
@@ -784,10 +949,12 @@ module icache_pipeline_top #(
     .l2_rsp_err      (d_l2_rsp_err_int)
   );
 
-  assign dmem_ready_i  = dcache_cpu_req_ready;
-  assign dmem_rvalid_i = dcache_cpu_rsp_valid;
-  assign dmem_rdata_i  = dcache_cpu_rsp_rdata;
-  assign store_done_i  = dcache_cpu_rsp_valid;
+  assign dmem_ready_i  = uart_mmio_hit ? uart_mmio_ready     : dcache_cpu_req_ready;
+  assign dmem_rvalid_i = uart_mmio_hit ? uart_mmio_rsp_valid : dcache_cpu_rsp_valid;
+  assign dmem_rdata_i  = uart_mmio_hit ? uart_mmio_rsp_rdata : dcache_cpu_rsp_rdata;
+  assign dmem_rsp_err_i = uart_mmio_hit ? uart_mmio_rsp_err  : dcache_cpu_rsp_err;
+  assign store_done_i  = dmem_rvalid_i;
+  wire        mem_err_event = dmem_rvalid_i & dmem_rsp_err_i;
 
   // ================= MEM/WB =================
   wire        wb_valid;
@@ -838,7 +1005,6 @@ module icache_pipeline_top #(
   assign wb_wdata_o = rf_wdata;
 
   // ================= Hazard/Control =================
-  wire stall_if_hdu, stall_id_hdu, stall_ex_hdu, stall_exmem_hdu;
   wire flush_ifid_hdu, flush_idex_hdu;
   wire [31:0] pending_load_mask = 32'b0;
 

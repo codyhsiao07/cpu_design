@@ -17,7 +17,7 @@ module uart_bootloader #(
   input               init_calib_complete,
 
   // MIG app write interface
-  output reg [27:0]   app_addr,
+  output reg [26:0]   app_addr,
   output reg [2:0]    app_cmd,
   output reg          app_en,
   output reg [127:0]  app_wdf_data,
@@ -78,7 +78,7 @@ module uart_bootloader #(
 
   // Default MIG outputs
   always @(*) begin
-    app_addr     = 28'd0;
+    app_addr     = 27'd0;
     app_cmd      = MIG_CMD_WRITE;
     app_en       = 1'b0;
     app_wdf_data = buf_data;

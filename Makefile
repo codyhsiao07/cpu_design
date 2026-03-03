@@ -6,26 +6,28 @@
 #   make run-sim
 #   make clean
 
-TC_PREFIX ?= riscv32-unknown-elf-
-CC       := $(TC_PREFIX)gcc
-OBJCOPY  := $(TC_PREFIX)objcopy
-OBJDUMP  := $(TC_PREFIX)objdump
+CC_PREFIX       ?= C:/riscv/xpack-riscv-none-elf-gcc/bin/riscv64-unknown-elf-
+BINUTILS_PREFIX ?= C:/riscv/xpack-riscv-none-elf-gcc/bin/riscv-none-elf-
+CC       := $(CC_PREFIX)gcc
+OBJCOPY  := $(BINUTILS_PREFIX)objcopy
+OBJDUMP  := $(BINUTILS_PREFIX)objdump
 PYTHON   ?= python
 
-SRC      ?= OS/main.c
+SRC      ?= game.c
 CRT0     ?= tools/crt0.S
 LDSCRIPT ?= tools/link_ddr.ld
 
 BUILD_DIR ?= build_os
-OUT_NAME  ?= os
-MEM_OUT   ?= TEST_FILES/mem_os.mem
+OUT_NAME  ?= game
+MEM_OUT   ?= TEST_FILES/mem_game.mem
 
 SIM_EXE       ?= icache_pipeline_tb.out
 SIM_MAXCYCLES ?= 500000
 SIM_EXPECT_RD ?= 8
 SIM_EXPECT_VAL ?= 00000011
 
-CFLAGS  ?= -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -O2 -Wall -Wextra
+APP_DEFINES ?= -DGAME_USE_UART
+CFLAGS  ?= -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -O2 -Wall -Wextra $(APP_DEFINES)
 LDFLAGS ?= -march=rv32i -mabi=ilp32 -nostdlib -Wl,-T,$(LDSCRIPT) -Wl,-Map,$(BUILD_DIR)/$(OUT_NAME).map
 
 SRC_BASE := $(notdir $(basename $(SRC)))
@@ -35,7 +37,9 @@ ELF      := $(BUILD_DIR)/$(OUT_NAME).elf
 BIN      := $(BUILD_DIR)/$(OUT_NAME).bin
 DISASM   := $(BUILD_DIR)/$(OUT_NAME).dis
 
-.PHONY: help all check-tools print-config elf bin mem disasm run-sim clean
+.PHONY: help all check-tools print-config elf bin mem disasm run-sim uart-mmio-tb clean
+
+.DEFAULT_GOAL := all
 
 help:
 	@echo "Targets:"
@@ -45,13 +49,16 @@ help:
 	@echo "  make mem          : build MEM ($(MEM_OUT))"
 	@echo "  make disasm       : generate disassembly ($(DISASM))"
 	@echo "  make run-sim      : run main TB with +MEMFILE=$(MEM_OUT)"
+	@echo "  make uart-mmio-tb : run dedicated UART MMIO regression TB"
 	@echo "  make clean        : remove build outputs"
 	@echo ""
 	@echo "Common overrides:"
-	@echo "  SRC=OS/main.c"
-	@echo "  OUT_NAME=os"
-	@echo "  MEM_OUT=TEST_FILES/mem_os.mem"
-	@echo "  TC_PREFIX=riscv32-unknown-elf-"
+	@echo "  SRC=game.c"
+	@echo "  OUT_NAME=game"
+	@echo "  MEM_OUT=TEST_FILES/mem_game.mem"
+	@echo "  APP_DEFINES=-DGAME_USE_UART"
+	@echo "  CC_PREFIX=C:/riscv/xpack-riscv-none-elf-gcc/bin/riscv64-unknown-elf-"
+	@echo "  BINUTILS_PREFIX=C:/riscv/xpack-riscv-none-elf-gcc/bin/riscv-none-elf-"
 	@echo "  PYTHON=python"
 
 all: mem
@@ -69,7 +76,9 @@ print-config:
 	@echo "BUILD_DIR=$(BUILD_DIR)"
 	@echo "OUT_NAME=$(OUT_NAME)"
 	@echo "MEM_OUT=$(MEM_OUT)"
-	@echo "TC_PREFIX=$(TC_PREFIX)"
+	@echo "APP_DEFINES=$(APP_DEFINES)"
+	@echo "CC_PREFIX=$(CC_PREFIX)"
+	@echo "BINUTILS_PREFIX=$(BINUTILS_PREFIX)"
 	@echo "SIM_EXE=$(SIM_EXE)"
 	@echo "SIM_EXPECT_RD=$(SIM_EXPECT_RD)"
 	@echo "SIM_EXPECT_VAL=$(SIM_EXPECT_VAL)"
@@ -78,12 +87,15 @@ $(BUILD_DIR):
 	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
 
 $(CRT0_OBJ): $(CRT0) | $(BUILD_DIR)
+	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(SRC_OBJ): $(SRC) | $(BUILD_DIR)
+	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(ELF): check-tools $(CRT0_OBJ) $(SRC_OBJ) $(LDSCRIPT)
+	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
 	$(CC) $(LDFLAGS) -o $@ $(CRT0_OBJ) $(SRC_OBJ)
 
 elf: $(ELF)
@@ -109,6 +121,10 @@ disasm: $(DISASM)
 
 run-sim: $(MEM_OUT)
 	vvp $(SIM_EXE) +TEST=0 +MEMFILE=$(MEM_OUT) +ASSERT_EN=1 +MAXCYCLES=$(SIM_MAXCYCLES) +EXPECT_RD=$(SIM_EXPECT_RD) +EXPECT_VAL=$(SIM_EXPECT_VAL)
+
+uart-mmio-tb: | $(BUILD_DIR)
+	iverilog -g2005-sv -DFAST_SIM -i -o $(BUILD_DIR)/uart_mmio_tb.out -s uart_mmio_tb *.v
+	vvp $(BUILD_DIR)/uart_mmio_tb.out
 
 clean:
 	$(PYTHON) -c "import shutil; shutil.rmtree(r'$(BUILD_DIR)', ignore_errors=True)"

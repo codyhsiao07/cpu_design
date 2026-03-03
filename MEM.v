@@ -95,7 +95,6 @@ module mem_stage (
       done_q         <= 1'b0;
       load_data_q    <= 32'h0;
       load_active_q  <= 1'b0;
-      req_pending_q  <= 1'b0;
     end else begin
       // done_q is intentionally a one-cycle pulse used to suppress exactly
       // one re-issue cycle while EX/MEM is still holding the completed op.

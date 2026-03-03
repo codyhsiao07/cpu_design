@@ -11,20 +11,26 @@
 // - UC_WR returns 1-beat response (ack)
 // ============================================================
 `timescale 1ns/1ps
+`ifndef PRODUCTION_BUILD
+`ifdef SYNTHESIS
+`ifndef FAST_SYNTH
+`define FAST_SYNTH
+`endif
+`endif
+`endif
 
 module l2_cache_core
 (
     input                  clk,
     input                  rst,
     input                  init_calib_complete,//是 DDR2 MIG 給你的「我已經可以正常用了」
-
     // -------- upstream (single selected master from arb) --------
     input                  req_valid,
     output reg             req_ready,
     input  [1:0]           req_cmd,
     input  [31:0]          req_addr,
     input  [2:0]           req_size,
-    //傳輸大小（bytes 的 log2）
+   //傳輸大小（bytes 的 log2）
     //這通常是 AXI/類 AXI 常見的表示法：
     //3'b000 = 1B
     //3'b001 = 2B
@@ -42,7 +48,7 @@ module l2_cache_core
     output reg             rsp_last,
 
     // -------- MIG native app --------
-    output reg [27:0]      app_addr,
+    output reg [26:0]      app_addr,
     output reg [2:0]       app_cmd,
     output reg             app_en,
     output reg [127:0]     app_wdf_data,
@@ -55,7 +61,6 @@ module l2_cache_core
     input                  app_rdy,//MIG 現在是否願意接收一筆「命令（READ / WRITE）
     input                  app_wdf_rdy//MIG 現在是否願意接收一筆「寫入資料（write data beat）」
 );
-
     // -------- Command encoding (unified) --------
     localparam [1:0] CMD_LINE_RD = 2'b00;
     localparam [1:0] CMD_UC_RD   = 2'b01;
@@ -72,9 +77,17 @@ module l2_cache_core
     localparam integer PA_W        = 32;//實際用來當記憶體位址
     localparam integer LINE_BYTES  = 64;
     localparam integer OFFSET_BITS = 6;   // log2(64)
-    localparam integer SETS        = 2048; // 256KiB / (64B * 2-way)
-    localparam integer INDEX_BITS  = 11;  // log2(2048)
-    localparam integer TAG_BITS    = PA_W - OFFSET_BITS - INDEX_BITS; // 32-6-11=15
+`ifdef FAST_SIM
+    localparam integer SETS        = 128; // 16KiB / (64B * 2-way), fast simulation
+    localparam integer INDEX_BITS  = 7;   // log2(128)
+`elsif FAST_SYNTH
+    localparam integer SETS        = 128; // 16KiB / (64B * 2-way), fast synthesis
+    localparam integer INDEX_BITS  = 7;   // log2(128)
+`else
+    localparam integer SETS        = 2048; // 256KiB / (64B * 2-way), production
+    localparam integer INDEX_BITS  = 11;   // log2(2048)
+`endif
+    localparam integer TAG_BITS    = PA_W - OFFSET_BITS - INDEX_BITS;
 
     // -------- Data arrays --------
     reg [TAG_BITS-1:0]  tag0_mem [0:SETS-1];
@@ -85,8 +98,8 @@ module l2_cache_core
     reg                 dir1_mem [0:SETS-1];
     reg                 plru_mem [0:SETS-1]; // 0 => way0 LRU, 1 => way1 LRU
 
-    reg [511:0]         data0_mem [0:SETS-1];
-    reg [511:0]         data1_mem [0:SETS-1];//64 bytes = 512 bits
+    (* ram_style = "block" *) reg [511:0] data0_mem [0:SETS-1];
+    (* ram_style = "block" *) reg [511:0] data1_mem [0:SETS-1];//64 bytes = 512 bits
 
     // -------- Helpers --------
     function [63:0] get_beat64;
@@ -130,7 +143,6 @@ module l2_cache_core
     wire is_mmio = is_mmio_raw;
     wire addr_legal = is_ddr;
     wire unc_eff = unc_r || is_mmio;//這筆存取是否要用 uncached 的方式處理
-
     // Upstream burst sanity (64-bit bus)
     // LINE_RD: 8 beats -> len=7, size=3 (8B)
     // UC_RD/UC_WR: 1 beat -> len=0, size=3 (8B)
@@ -198,7 +210,6 @@ module l2_cache_core
     reg [511:0] line_buf;
     reg [511:0] refill_buf;
     reg [1:0]   mig_beat_cnt;//L2 和 DDR2 MIG 之間「資料拍數（beat）控制」的核心計數器
-
     // WB_LINE receive buffer
     reg [2:0]   wb_beat_cnt;//L2 從「上游（D$）」接收一整條 cache line 時，目前收到了第幾個 64-bit beat
     reg [511:0] wb_buf;
@@ -221,7 +232,7 @@ module l2_cache_core
     localparam [2:0] MIG_CMD_WRITE = 3'b000;
 
     // MIG address translation: app_addr = (PA - DDR_BASE) >> 4
-    function [27:0] pa_to_app_addr16;
+    function [26:0] pa_to_app_addr16;
         input [31:0] pa16_aligned;
         reg   [31:0] off;
         begin
@@ -232,23 +243,22 @@ module l2_cache_core
 
     // For uncached 64-bit access, choose lower/upper 8B inside 16B line by addr[3]
     wire uc_hi64 = addr_r[3];
-    //這兩行是在處理 uncached 存取時的「16B 對齊問題」：MIG 一次只能讀/寫 128-bit = 16 bytes，
+        //這兩行是在處理 uncached 存取時的「16B 對齊問題」：MIG 一次只能讀/寫 128-bit = 16 bytes，
     //但你的上游（L1↔L2）一次只想處理 64-bit = 8 bytes。所以你必須決定：這 8B 是落在那個 16B chunk 的下半還是上半。
     //看 addr_r[3] 這一個 bit，判斷這次 uncached 的 8-byte 資料是在 16-byte chunk 的哪一半。
     //addr_r[3] = 0 → 位址在 0x...0 ~ 0x...7
     //→ 使用 lower 64-bit（[63:0]）
     //addr_r[3] = 1 → 位址在 0x...8 ~ 0x...F
     //→ 使用 upper 64-bit（[127:64]）
-    // -------- Default outputs (combinational) --------
     always @(*) begin
-        // defaults L2 對上游
+         // defaults L2 對上游
         req_ready    = 1'b0;//我現在不接受新 request
         rsp_valid    = 1'b0;//我現在沒有 response 要給你
         rsp_rdata    = 64'd0;//response 的資料內容
         rsp_err      = 1'b0;//這筆 response 是否為 error
         rsp_last     = 1'b0;//這是不是最後一拍 response
         //L2 → DDR2 MIG
-        app_addr     = 28'd0;//預設位址 0（don’t care）
+        app_addr     = 27'd0;//預設位址 0（don’t care）
         app_cmd      = MIG_CMD_READ;//預設命令 = READ（但不會真的發生）
         app_en       = 1'b0;//關鍵訊號：不發送任何 DDR command
         app_wdf_data = 128'd0;//寫資料預設為 0（don’t care）
@@ -401,12 +411,8 @@ module l2_cache_core
             refill_buf <= 512'd0;
             wb_buf     <= 512'd0;
             //這些暫存是在 cache miss / writeback 流程中，用來保存「被替換(淘汰)的那一條 line」的資訊，L2 miss 時要寫回 DDR 的「被淘汰 cache line」暫存。
-            victim_line_buf  <= 512'd0;//暫存被淘汰的整條 64B cache line
             victim_tag_buf   <= {TAG_BITS{1'b0}};//暫存那條 line 的 tag
             victim_dirty_buf <= 1'b0;//是否 dirty（需要 writeback）
-            victim_valid_buf <= 1'b0;//是否 valid（若無效就不用 writeback）。
-            victim_way_buf   <= 1'b0;//被淘汰的是 way0 還是 way1。
-            install_way_buf  <= 1'b0;
             evict_needed_buf <= 1'b0;
 
             uc_rdata_buf <= 64'd0;
@@ -668,3 +674,5 @@ module l2_cache_core
     end
 
 endmodule
+
+

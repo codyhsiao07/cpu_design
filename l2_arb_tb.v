@@ -56,7 +56,7 @@ module l2_arb_tb;
   reg         d_rsp_last_seen;
 
   // MIG app interface (from DUT)
-  wire [27:0]  app_addr;
+  wire [26:0]  app_addr;
   wire [2:0]   app_cmd;
   wire         app_en;
   wire [127:0] app_wdf_data;
@@ -140,7 +140,7 @@ module l2_arb_tb;
 
   // MIG read data generator
   function [127:0] gen_rd_data;
-    input [27:0] a;
+    input [26:0] a;
     reg [31:0] base_word;
     begin
       base_word = {4'b0, a} << 2; // app_addr * 4 words
