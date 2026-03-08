@@ -150,3 +150,7 @@ python uart_send_mem.py --port COM3 --mem TEST_FILES/mem_os.mem
 1. 先用 `uart_send_mem.py` 送檔
 2. 再用串列埠終端機連到同一個 `COM` 埠
 3. 用 `115200 8N1` 和遊戲互動
+4. python uart_send_mem.py --port COM7 --baud 115200 --mem TEST_FILES/mem_game.mem --delay 3.0 --preamble 4096 --interactive
+5. python uart_send_mem.py --port COM7 --baud 115200 --mem TEST_FILES/mem_tetris.mem --delay 3.0 --preamble 4096 --interactive
+6. python uart_send_mem.py --port COM7 --baud 115200 --mem TEST_FILES/mem_games_menu.mem --delay 3.0 --preamble 4096 --interactive
+

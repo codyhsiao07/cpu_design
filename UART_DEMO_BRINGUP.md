@@ -1,6 +1,6 @@
 ﻿# UART Demo Bring-Up
 
-本文件說明目前 `DDR2 + MIG + game.c` 這條路徑，如何在板上完成 UART 展示。
+本文件說明目前 `DDR2 + MIG + game/game.c` 這條路徑，如何在板上完成 UART 展示。
 
 ## 1. 先決條件
 
@@ -60,7 +60,7 @@ Get-WmiObject Win32_SerialPort | Select-Object DeviceID,Name
 ## 5. 產生 `.mem`
 
 目前 `Makefile` 預設會編：
-- `game.c`
+- `game/game.c`
 - 並開 `GAME_USE_UART`
 
 直接執行：
@@ -121,7 +121,7 @@ python uart_send_mem.py --port COM5 --baud 115200 --mem TEST_FILES/mem_game.mem 
    - `2 1`
    - `1 2`
 
-## 9. `game.c` 的 UART 輸入規則
+## 9. `game/game.c` 的 UART 輸入規則
 
 - 接受 `1..5`
 - 可輸入：

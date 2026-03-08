@@ -52,7 +52,7 @@
 ## 4. Makefile 快速用法
 
 預設：
-- `SRC=game.c`
+- `SRC=game/game.c`
 - `OUT_NAME=game`
 - `MEM_OUT=TEST_FILES/mem_game.mem`
 - `APP_DEFINES=-DGAME_USE_UART`

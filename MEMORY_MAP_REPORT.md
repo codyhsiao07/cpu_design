@@ -77,9 +77,9 @@
 - MIG XDC 不再負責 `sys_clk_i` 的 pin/clock 約束
 - 這部分由板級 XDC 另外設定
 
-## 7. 目前 `game.c` 的實際程式配置
+## 7. 目前 `game/game.c` 的實際程式配置
 
-依 [game.map](/c:/cpu_design/build_os/game.map) 與 [link_ddr.ld](/c:/cpu_design/tools/link_ddr.ld)，目前 `game.c` 連結後的配置如下：
+依 [game.map](/c:/cpu_design/build_os/game.map) 與 [link_ddr.ld](/c:/cpu_design/tools/link_ddr.ld)，目前 `game/game.c` 連結後的配置如下：
 
 - `.text`：`0x8000_0000 ~ 0x8000_08AE`
   - 含 `_start` 與 `main`
@@ -94,7 +94,7 @@
 
 這代表：
 
-- 目前 `game.c` 的程式碼與資料段確實是分開排的
+- 目前 `game/game.c` 的程式碼與資料段確實是分開排的
 - 正常情況下，I$ 主要碰 `.text/.rodata`
 - D$ 主要碰 `.data/.bss/stack`
 

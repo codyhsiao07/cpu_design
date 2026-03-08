@@ -5,7 +5,7 @@
 ## 1. 目前 Makefile 的預設行為
 
 目前 [Makefile](/c:/cpu_design/Makefile) 的預設值是：
-- `SRC=game.c`
+- `SRC=game/game.c`
 - `OUT_NAME=game`
 - `MEM_OUT=TEST_FILES/mem_game.mem`
 - `APP_DEFINES=-DGAME_USE_UART`
@@ -58,7 +58,7 @@ make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 
 ## 4. 建議的日常流程
 
-### 編 `game.c`
+### 編 `game/game.c`
 
 ```powershell
 make clean

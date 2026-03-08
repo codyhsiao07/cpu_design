@@ -13,7 +13,9 @@ OBJCOPY  := $(BINUTILS_PREFIX)objcopy
 OBJDUMP  := $(BINUTILS_PREFIX)objdump
 PYTHON   ?= python
 
-SRC      ?= game.c
+GAME_DIR ?= game
+SRC      ?= $(GAME_DIR)/game.c
+EXTRA_SRCS ?=
 CRT0     ?= tools/crt0.S
 LDSCRIPT ?= tools/link_ddr.ld
 
@@ -25,6 +27,7 @@ SIM_EXE       ?= icache_pipeline_tb.out
 SIM_MAXCYCLES ?= 500000
 SIM_EXPECT_RD ?= 8
 SIM_EXPECT_VAL ?= 00000011
+GAMES_MENU_EXTRA_SRCS := $(GAME_DIR)/games_shared_ui.c $(GAME_DIR)/game_tictactoe_menu.c $(GAME_DIR)/game_tictactoe_core.c $(GAME_DIR)/game_tetris_menu.c $(GAME_DIR)/game_tetris_core.c
 
 APP_DEFINES ?= -DGAME_USE_UART
 CFLAGS  ?= -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -O2 -Wall -Wextra $(APP_DEFINES)
@@ -33,11 +36,13 @@ LDFLAGS ?= -march=rv32i -mabi=ilp32 -nostdlib -Wl,-T,$(LDSCRIPT) -Wl,-Map,$(BUIL
 SRC_BASE := $(notdir $(basename $(SRC)))
 CRT0_OBJ := $(BUILD_DIR)/crt0.o
 SRC_OBJ  := $(BUILD_DIR)/$(SRC_BASE).o
+EXTRA_SRCS_STRIPPED := $(strip $(EXTRA_SRCS))
+EXTRA_OBJS := $(foreach src,$(EXTRA_SRCS_STRIPPED),$(BUILD_DIR)/$(notdir $(basename $(src))).o)
 ELF      := $(BUILD_DIR)/$(OUT_NAME).elf
 BIN      := $(BUILD_DIR)/$(OUT_NAME).bin
 DISASM   := $(BUILD_DIR)/$(OUT_NAME).dis
 
-.PHONY: help all check-tools print-config elf bin mem disasm run-sim uart-mmio-tb clean
+.PHONY: help all check-tools print-config elf bin mem games-menu disasm run-sim uart-mmio-tb clean
 
 .DEFAULT_GOAL := all
 
@@ -47,13 +52,16 @@ help:
 	@echo "  make elf          : build ELF ($(ELF))"
 	@echo "  make bin          : build BIN ($(BIN))"
 	@echo "  make mem          : build MEM ($(MEM_OUT))"
+	@echo "  make games-menu   : build TEST_FILES/mem_games_menu.mem"
 	@echo "  make disasm       : generate disassembly ($(DISASM))"
 	@echo "  make run-sim      : run main TB with +MEMFILE=$(MEM_OUT)"
 	@echo "  make uart-mmio-tb : run dedicated UART MMIO regression TB"
 	@echo "  make clean        : remove build outputs"
 	@echo ""
 	@echo "Common overrides:"
-	@echo "  SRC=game.c"
+	@echo "  GAME_DIR=game"
+	@echo "  SRC=$(GAME_DIR)/game.c"
+	@echo "  EXTRA_SRCS="
 	@echo "  OUT_NAME=game"
 	@echo "  MEM_OUT=TEST_FILES/mem_game.mem"
 	@echo "  APP_DEFINES=-DGAME_USE_UART"
@@ -71,6 +79,7 @@ check-tools:
 
 print-config:
 	@echo "SRC=$(SRC)"
+	@echo "EXTRA_SRCS=$(EXTRA_SRCS)"
 	@echo "CRT0=$(CRT0)"
 	@echo "LDSCRIPT=$(LDSCRIPT)"
 	@echo "BUILD_DIR=$(BUILD_DIR)"
@@ -94,9 +103,17 @@ $(SRC_OBJ): $(SRC) | $(BUILD_DIR)
 	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(ELF): check-tools $(CRT0_OBJ) $(SRC_OBJ) $(LDSCRIPT)
+define EXTRA_COMPILE_RULE
+$(BUILD_DIR)/$(notdir $(basename $(1))).o: $(1) | $(BUILD_DIR)
 	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
-	$(CC) $(LDFLAGS) -o $@ $(CRT0_OBJ) $(SRC_OBJ)
+	$(CC) $(CFLAGS) -c $$< -o $$@
+endef
+
+$(foreach src,$(EXTRA_SRCS_STRIPPED),$(eval $(call EXTRA_COMPILE_RULE,$(src))))
+
+$(ELF): check-tools $(CRT0_OBJ) $(SRC_OBJ) $(EXTRA_OBJS) $(LDSCRIPT)
+	$(PYTHON) -c "import os; os.makedirs(r'$(BUILD_DIR)', exist_ok=True)"
+	$(CC) $(LDFLAGS) -o $@ $(CRT0_OBJ) $(SRC_OBJ) $(EXTRA_OBJS)
 
 elf: $(ELF)
 	@echo "Built: $(ELF)"
@@ -112,6 +129,9 @@ $(MEM_OUT): $(BIN)
 
 mem: $(MEM_OUT)
 	@echo "Built: $(MEM_OUT)"
+
+games-menu:
+	$(MAKE) GAME_DIR=$(GAME_DIR) SRC=$(GAME_DIR)/games_menu.c EXTRA_SRCS="$(GAMES_MENU_EXTRA_SRCS)" OUT_NAME=games_menu MEM_OUT=TEST_FILES/mem_games_menu.mem mem
 
 $(DISASM): $(ELF)
 	$(OBJDUMP) -D $< > $@
