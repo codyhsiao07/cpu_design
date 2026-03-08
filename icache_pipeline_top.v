@@ -19,6 +19,7 @@ module icache_pipeline_top #(
   parameter integer UART_BOOT_EN = 0,
   parameter integer UART_BAUD    = 115_200,
   parameter integer UART_CLK_HZ  = 100_000_000,
+  parameter integer BOOT_RELEASE_CYCLES = 100_000,
   parameter [31:0]  UART_BOOT_BASE = 32'h8000_0000,
   parameter [31:0]  RESET_PC    = 32'h0000_0000
 ) (
@@ -81,7 +82,54 @@ module icache_pipeline_top #(
   output [4:0]            wb_rd_o,
   output [31:0]           wb_wdata_o,
   output                  ifetch_err_o,
-  output                  boot_done_o
+  output                  boot_done_o,
+  output                  boot_edge_seen_o,
+  output                  boot_ui_edge_seen_o,
+  output                  boot_ui_edge_active_o,
+  output                  boot_boot_edge_seen_o,
+  output                  boot_rx_seen_o,
+  output                  boot_sync_seen_o,
+  output                  boot_rst_released_o,
+  output                  boot_ui_reset_released_o,
+  output                  boot_ui_clk_seen_o,
+  output                  boot_ui_clk_blink_o,
+  output [2:0]            boot_state_o,
+  output [3:0]            boot_rx_sel_o,
+  output                  core_running_o,
+  output                  core_pc_seen_o,
+  output                  uart_mmio_seen_o,
+  output                  uart_tx_fire_seen_o,
+  output                  uart_tx_busy_seen_o,
+  output                  dmem_req_seen_o,
+  output                  dmem_store_seen_o,
+  output                  dmem_rsp_seen_o,
+  output                  mem_stall_seen_o,
+  output                  wb_seen_o,
+  output                  boot_word0_ok_o,
+  output                  boot_word1_ok_o,
+  output                  boot_word2_ok_o,
+  output                  boot_word3_ok_o,
+  output                  boot_header_ok_o,
+  output                  boot_verify0_ok_o,
+  output                  boot_verify1_ok_o,
+  output                  boot_verify2_ok_o,
+  output                  boot_verify0_w0_ok_o,
+  output                  boot_verify0_w1_ok_o,
+  output                  boot_verify0_w2_ok_o,
+  output                  boot_verify0_w3_ok_o,
+  output                  boot_verify0_wordrev_ok_o,
+  output                  boot_verify0_byterev32_ok_o,
+  output                  boot_verify0_byterev128_ok_o,
+  output                  boot_verify0_memtest0_ok_o,
+  output                  boot_verify_req_seen_o,
+  output                  boot_verify_rsp_seen_o,
+  output                  boot_memtest_pass_o,
+  output                  boot_memtest_done_o,
+  output                  boot_memtest_rd_seen_o,
+  output                  boot_memtest0_ok_o,
+  output                  boot_memtest1_ok_o,
+  output                  boot_memtest2_ok_o,
+  output                  boot_memtest3_ok_o
 );
 
   // ---------------- Clock/Reset selection ----------------
@@ -92,8 +140,107 @@ module icache_pipeline_top #(
   wire ui_clk;
   wire ui_clk_sync_rst;
   wire boot_done_int;
+  wire boot_edge_seen_boot_int;
+  wire boot_edge_seen_int;
+  wire boot_rx_seen_int;
+  wire boot_sync_seen_int;
+  wire boot_rst_released_int;
+  wire boot_ui_reset_released_w;
+  wire [2:0] boot_state_int;
+  localparam integer BOOT_RELEASE_W = (BOOT_RELEASE_CYCLES <= 1) ? 1 : $clog2(BOOT_RELEASE_CYCLES + 1);
+  (* ASYNC_REG = "TRUE" *) reg ui_rx_ff1_q;
+  (* ASYNC_REG = "TRUE" *) reg ui_rx_ff2_q;
+  reg  ui_rx_ff2_d_q;
+  reg  boot_ui_edge_seen_q;
+  reg  boot_ui_clk_seen_q;
+  reg [25:0] boot_ui_edge_active_cnt_q;
+  reg [24:0] ui_clk_blink_cnt_q;
+  reg  [31:0] if_pc_prev_q;
+  reg         core_pc_seen_q;
+  reg         uart_mmio_seen_q;
+  reg         uart_tx_fire_seen_q;
+  reg         uart_tx_busy_seen_q;
+  reg         dmem_req_seen_q;
+  reg         dmem_store_seen_q;
+  reg         dmem_rsp_seen_q;
+  reg         mem_stall_seen_q;
+  reg         wb_seen_q;
+  reg [BOOT_RELEASE_W-1:0] boot_release_cnt_q;
+  reg         boot_release_ok_q;
+  wire        boot_word0_ok_int;
+  wire        boot_word1_ok_int;
+  wire        boot_word2_ok_int;
+  wire        boot_word3_ok_int;
+  wire        boot_header_ok_int;
+  wire        boot_verify0_ok_int;
+  wire        boot_verify1_ok_int;
+  wire        boot_verify2_ok_int;
+  wire        boot_verify0_w0_ok_int;
+  wire        boot_verify0_w1_ok_int;
+  wire        boot_verify0_w2_ok_int;
+  wire        boot_verify0_w3_ok_int;
+  wire        boot_verify0_wordrev_ok_int;
+  wire        boot_verify0_byterev32_ok_int;
+  wire        boot_verify0_byterev128_ok_int;
+  wire        boot_verify0_memtest0_ok_int;
+  wire        boot_verify_req_seen_int;
+  wire        boot_verify_rsp_seen_int;
+  wire [3:0]  boot_rx_sel_int;
+  wire        boot_memtest_pass_int;
+  wire        boot_memtest_done_int;
+  wire        boot_memtest_rd_seen_int;
+  wire        boot_memtest0_ok_int;
+  wire        boot_memtest1_ok_int;
+  wire        boot_memtest2_ok_int;
+  wire        boot_memtest3_ok_int;
 
   assign core_rst = ~core_rst_n;
+  assign boot_edge_seen_int = boot_edge_seen_boot_int | boot_ui_edge_seen_q;
+  assign boot_ui_reset_released_w = ~ui_clk_sync_rst & init_calib_complete;
+
+  // UI-clock domain UART edge detector. This is independent from bootloader
+  // FSM state and helps isolate clock/reset vs protocol issues on board.
+  always @(posedge ui_clk or posedge ui_clk_sync_rst) begin
+    if (ui_clk_sync_rst || !init_calib_complete) begin
+      ui_rx_ff1_q <= 1'b1;
+      ui_rx_ff2_q <= 1'b1;
+      ui_rx_ff2_d_q <= 1'b1;
+      boot_ui_edge_seen_q <= 1'b0;
+      boot_ui_clk_seen_q <= 1'b0;
+      boot_ui_edge_active_cnt_q <= 26'd0;
+      ui_clk_blink_cnt_q <= 25'd0;
+    end else begin
+      ui_rx_ff1_q <= uart_rx_i;
+      ui_rx_ff2_q <= ui_rx_ff1_q;
+      ui_rx_ff2_d_q <= ui_rx_ff2_q;
+      boot_ui_clk_seen_q <= 1'b1;
+      ui_clk_blink_cnt_q <= ui_clk_blink_cnt_q + 1'b1;
+      if (ui_rx_ff2_q ^ ui_rx_ff2_d_q) begin
+        boot_ui_edge_seen_q <= 1'b1;
+        boot_ui_edge_active_cnt_q <= 26'd50_000_000;
+      end else if (boot_ui_edge_active_cnt_q != 26'd0) begin
+        boot_ui_edge_active_cnt_q <= boot_ui_edge_active_cnt_q - 1'b1;
+      end
+    end
+  end
+
+  always @(posedge ui_clk or posedge ui_clk_sync_rst) begin
+    if (ui_clk_sync_rst || !init_calib_complete) begin
+      boot_release_cnt_q <= {BOOT_RELEASE_W{1'b0}};
+      boot_release_ok_q  <= 1'b0;
+    end else if (!boot_done_int) begin
+      boot_release_cnt_q <= {BOOT_RELEASE_W{1'b0}};
+      boot_release_ok_q  <= 1'b0;
+    end else if (!boot_release_ok_q) begin
+      if (BOOT_RELEASE_CYCLES <= 1) begin
+        boot_release_ok_q <= 1'b1;
+      end else if (boot_release_cnt_q == BOOT_RELEASE_CYCLES - 1) begin
+        boot_release_ok_q <= 1'b1;
+      end else begin
+        boot_release_cnt_q <= boot_release_cnt_q + 1'b1;
+      end
+    end
+  end
 
   // ---------------- Internal L2 wires (I$ / D$) ----------------
   wire                  i_l2_req_ready_int;
@@ -149,9 +296,17 @@ module icache_pipeline_top #(
       wire [15:0]  app_wdf_mask_boot;
       wire         app_wdf_wren_boot;
       wire         boot_active_w;
+      wire [26:0]  app_addr_memtest;
+      wire [2:0]   app_cmd_memtest;
+      wire         app_en_memtest;
+      wire [127:0] app_wdf_data_memtest;
+      wire         app_wdf_end_memtest;
+      wire [15:0]  app_wdf_mask_memtest;
+      wire         app_wdf_wren_memtest;
+      wire         memtest_active_w;
 
       // MIG instance
-      mig u_mig (
+      mig_7series_0 u_mig (
         .ddr2_dq (ddr2_dq),
         .ddr2_dqs_n (ddr2_dqs_n),
         .ddr2_dqs_p (ddr2_dqs_p),
@@ -189,12 +344,12 @@ module icache_pipeline_top #(
         .ui_clk (ui_clk),
         .ui_clk_sync_rst (ui_clk_sync_rst),
         .init_calib_complete (init_calib_complete),
-        .sys_rst (~rst_n)                // sys_rst (active high)
+        .sys_rst (rst_n)                 // MIG sys_rst is active low in this IP config
       );
 
       // Core clock/reset from MIG UI
       assign core_clk   = ui_clk;
-      assign core_rst_n = rst_n & ~ui_clk_sync_rst & init_calib_complete & boot_done_int;
+      assign core_rst_n = rst_n & ~ui_clk_sync_rst & init_calib_complete & boot_release_ok_q;
 
       // L2 + arbitration
       l2_cache_top u_l2 (
@@ -247,6 +402,35 @@ module icache_pipeline_top #(
         .app_wdf_rdy (app_wdf_rdy)
       );
 
+      ddr_app_memtest #(
+        .TEST_BASE_ADDR (27'd0),
+        .WAIT_CYCLES    (512)
+      ) u_boot_memtest (
+        .clk             (ui_clk),
+        .start_i         (init_calib_complete),
+        .app_addr        (app_addr_memtest),
+        .app_cmd         (app_cmd_memtest),
+        .app_en          (app_en_memtest),
+        .app_wdf_data    (app_wdf_data_memtest),
+        .app_wdf_end     (app_wdf_end_memtest),
+        .app_wdf_mask    (app_wdf_mask_memtest),
+        .app_wdf_wren    (app_wdf_wren_memtest),
+        .app_rd_data     (app_rd_data),
+        .app_rd_data_end (app_rd_data_end),
+        .app_rd_data_valid (app_rd_data_valid),
+        .app_rdy         (app_rdy),
+        .app_wdf_rdy     (app_wdf_rdy),
+        .done_o          (boot_memtest_done_int),
+        .pass_o          (boot_memtest_pass_int),
+        .rd_seen_o       (boot_memtest_rd_seen_int),
+        .beat0_ok_o      (boot_memtest0_ok_int),
+        .beat1_ok_o      (boot_memtest1_ok_int),
+        .beat2_ok_o      (boot_memtest2_ok_int),
+        .beat3_ok_o      (boot_memtest3_ok_int)
+      );
+
+      assign memtest_active_w = init_calib_complete && ~boot_memtest_done_int;
+
       // UART bootloader (optional)
       if (UART_BOOT_EN) begin : GEN_UART_BOOT
         uart_bootloader #(
@@ -256,9 +440,8 @@ module icache_pipeline_top #(
           .BOOT_ADDR(UART_BOOT_BASE)
         ) u_boot (
           .clk               (ui_clk),
-          .rst_n             (rst_n & ~ui_clk_sync_rst),
           .uart_rx_i         (uart_rx_i),
-          .init_calib_complete (init_calib_complete),
+          .init_calib_complete (init_calib_complete & boot_memtest_done_int),
           .app_addr          (app_addr_boot),
           .app_cmd           (app_cmd_boot),
           .app_en            (app_en_boot),
@@ -268,7 +451,34 @@ module icache_pipeline_top #(
           .app_wdf_wren      (app_wdf_wren_boot),
           .app_rdy           (app_rdy),
           .app_wdf_rdy       (app_wdf_rdy),
-          .boot_done_o       (boot_done_int)
+          .app_rd_data       (app_rd_data),
+          .app_rd_data_end   (app_rd_data_end),
+          .app_rd_data_valid (app_rd_data_valid),
+          .boot_done_o       (boot_done_int),
+          .debug_edge_seen_o (boot_edge_seen_boot_int),
+          .debug_rx_seen_o   (boot_rx_seen_int),
+          .debug_sync_seen_o (boot_sync_seen_int),
+          .debug_rst_released_o (boot_rst_released_int),
+          .debug_state_o     (boot_state_int),
+          .debug_rx_sel_o    (boot_rx_sel_int),
+          .debug_word0_ok_o  (boot_word0_ok_int),
+          .debug_word1_ok_o  (boot_word1_ok_int),
+          .debug_word2_ok_o  (boot_word2_ok_int),
+          .debug_word3_ok_o  (boot_word3_ok_int),
+          .debug_header_ok_o (boot_header_ok_int),
+          .debug_verify0_ok_o (boot_verify0_ok_int),
+          .debug_verify1_ok_o (boot_verify1_ok_int),
+          .debug_verify2_ok_o (boot_verify2_ok_int),
+          .debug_verify0_w0_ok_o (boot_verify0_w0_ok_int),
+          .debug_verify0_w1_ok_o (boot_verify0_w1_ok_int),
+          .debug_verify0_w2_ok_o (boot_verify0_w2_ok_int),
+          .debug_verify0_w3_ok_o (boot_verify0_w3_ok_int),
+          .debug_verify0_wordrev_ok_o (boot_verify0_wordrev_ok_int),
+          .debug_verify0_byterev32_ok_o (boot_verify0_byterev32_ok_int),
+          .debug_verify0_byterev128_ok_o (boot_verify0_byterev128_ok_int),
+          .debug_verify0_memtest0_ok_o (boot_verify0_memtest0_ok_int),
+          .debug_verify_req_seen_o (boot_verify_req_seen_int),
+          .debug_verify_rsp_seen_o (boot_verify_rsp_seen_int)
         );
         assign boot_active_w = ~boot_done_int;
       end else begin : GEN_NO_UART_BOOT
@@ -279,26 +489,95 @@ module icache_pipeline_top #(
         assign app_wdf_end_boot  = 1'b0;
         assign app_wdf_mask_boot = 16'hFFFF;
         assign app_wdf_wren_boot = 1'b0;
-        assign boot_active_w     = 1'b0;
-        assign boot_done_int     = 1'b1;
+                assign boot_active_w      = 1'b0;
+        assign boot_done_int      = 1'b1;
+        assign boot_edge_seen_boot_int = 1'b0;
+        assign boot_rx_seen_int   = 1'b0;
+        assign boot_sync_seen_int = 1'b0;
+        assign boot_rst_released_int = 1'b1;
+        assign boot_state_int     = 3'd0;
+        assign boot_rx_sel_int    = 4'd0;
+        assign boot_word0_ok_int  = 1'b0;
+        assign boot_word1_ok_int  = 1'b0;
+        assign boot_word2_ok_int  = 1'b0;
+        assign boot_word3_ok_int  = 1'b0;
+        assign boot_header_ok_int = 1'b0;
+        assign boot_verify0_ok_int = 1'b0;
+        assign boot_verify1_ok_int = 1'b0;
+        assign boot_verify2_ok_int = 1'b0;
+        assign boot_verify0_w0_ok_int = 1'b0;
+        assign boot_verify0_w1_ok_int = 1'b0;
+        assign boot_verify0_w2_ok_int = 1'b0;
+        assign boot_verify0_w3_ok_int = 1'b0;
+        assign boot_verify0_wordrev_ok_int = 1'b0;
+        assign boot_verify0_byterev32_ok_int = 1'b0;
+        assign boot_verify0_byterev128_ok_int = 1'b0;
+        assign boot_verify0_memtest0_ok_int = 1'b0;
+        assign boot_verify_req_seen_int = 1'b0;
+        assign boot_verify_rsp_seen_int = 1'b0;
+        assign boot_memtest_pass_int = 1'b1;
+        assign boot_memtest_done_int = 1'b1;
+        assign boot_memtest_rd_seen_int = 1'b0;
+        assign boot_memtest0_ok_int = 1'b1;
+        assign boot_memtest1_ok_int = 1'b1;
+        assign boot_memtest2_ok_int = 1'b1;
+        assign boot_memtest3_ok_int = 1'b1;
       end
 
-      // MIG app mux: bootloader has priority until done
-      assign app_addr     = boot_active_w ? app_addr_boot     : app_addr_l2;
-      assign app_cmd      = boot_active_w ? app_cmd_boot      : app_cmd_l2;
-      assign app_en       = boot_active_w ? app_en_boot       : app_en_l2;
-      assign app_wdf_data = boot_active_w ? app_wdf_data_boot : app_wdf_data_l2;
-      assign app_wdf_end  = boot_active_w ? app_wdf_end_boot  : app_wdf_end_l2;
-      assign app_wdf_mask = boot_active_w ? app_wdf_mask_boot : app_wdf_mask_l2;
-      assign app_wdf_wren = boot_active_w ? app_wdf_wren_boot : app_wdf_wren_l2;
+      // MIG app mux: memtest first, then bootloader, then L2.
+      assign app_addr     = memtest_active_w ? app_addr_memtest :
+                            (boot_active_w ? app_addr_boot : app_addr_l2);
+      assign app_cmd      = memtest_active_w ? app_cmd_memtest :
+                            (boot_active_w ? app_cmd_boot : app_cmd_l2);
+      assign app_en       = memtest_active_w ? app_en_memtest :
+                            (boot_active_w ? app_en_boot : app_en_l2);
+      assign app_wdf_data = memtest_active_w ? app_wdf_data_memtest :
+                            (boot_active_w ? app_wdf_data_boot : app_wdf_data_l2);
+      assign app_wdf_end  = memtest_active_w ? app_wdf_end_memtest :
+                            (boot_active_w ? app_wdf_end_boot : app_wdf_end_l2);
+      assign app_wdf_mask = memtest_active_w ? app_wdf_mask_memtest :
+                            (boot_active_w ? app_wdf_mask_boot : app_wdf_mask_l2);
+      assign app_wdf_wren = memtest_active_w ? app_wdf_wren_memtest :
+                            (boot_active_w ? app_wdf_wren_boot : app_wdf_wren_l2);
     end else begin : GEN_NO_MIG
       assign init_calib_complete = 1'b1;
       assign ui_clk = clk;
       assign ui_clk_sync_rst = 1'b0;
 
-      assign core_clk   = clk;
-      assign core_rst_n = rst_n;
-      assign boot_done_int = 1'b1;
+            assign core_clk            = clk;
+      assign core_rst_n          = rst_n;
+      assign boot_done_int       = 1'b1;
+      assign boot_edge_seen_boot_int = 1'b0;
+      assign boot_rx_seen_int    = 1'b0;
+      assign boot_sync_seen_int  = 1'b0;
+      assign boot_rst_released_int = 1'b1;
+      assign boot_state_int      = 3'd0;
+      assign boot_rx_sel_int     = 4'd0;
+      assign boot_word0_ok_int   = 1'b0;
+      assign boot_word1_ok_int   = 1'b0;
+      assign boot_word2_ok_int   = 1'b0;
+      assign boot_word3_ok_int   = 1'b0;
+      assign boot_header_ok_int  = 1'b0;
+      assign boot_verify0_ok_int = 1'b0;
+      assign boot_verify1_ok_int = 1'b0;
+      assign boot_verify2_ok_int = 1'b0;
+      assign boot_verify0_w0_ok_int = 1'b0;
+      assign boot_verify0_w1_ok_int = 1'b0;
+      assign boot_verify0_w2_ok_int = 1'b0;
+      assign boot_verify0_w3_ok_int = 1'b0;
+      assign boot_verify0_wordrev_ok_int = 1'b0;
+      assign boot_verify0_byterev32_ok_int = 1'b0;
+      assign boot_verify0_byterev128_ok_int = 1'b0;
+      assign boot_verify0_memtest0_ok_int = 1'b0;
+      assign boot_verify_req_seen_int = 1'b0;
+      assign boot_verify_rsp_seen_int = 1'b0;
+      assign boot_memtest_pass_int = 1'b1;
+      assign boot_memtest_done_int = 1'b1;
+      assign boot_memtest_rd_seen_int = 1'b0;
+      assign boot_memtest0_ok_int = 1'b1;
+      assign boot_memtest1_ok_int = 1'b1;
+      assign boot_memtest2_ok_int = 1'b1;
+      assign boot_memtest3_ok_int = 1'b1;
 
       assign i_l2_req_ready_int = l2_req_ready;
       assign i_l2_rsp_valid_int = l2_rsp_valid;
@@ -315,6 +594,53 @@ module icache_pipeline_top #(
   endgenerate
 
   assign boot_done_o = boot_done_int;
+  assign boot_edge_seen_o = boot_edge_seen_int;
+  assign boot_ui_edge_seen_o = boot_ui_edge_seen_q;
+  assign boot_ui_edge_active_o = (boot_ui_edge_active_cnt_q != 26'd0);
+  assign boot_boot_edge_seen_o = boot_edge_seen_boot_int;
+  assign boot_rx_seen_o = boot_rx_seen_int;
+  assign boot_sync_seen_o = boot_sync_seen_int;
+  assign boot_rst_released_o = boot_rst_released_int;
+  assign boot_ui_reset_released_o = boot_ui_reset_released_w;
+  assign boot_ui_clk_seen_o = boot_ui_clk_seen_q;
+  assign boot_ui_clk_blink_o = ui_clk_blink_cnt_q[23];
+  assign boot_state_o = boot_state_int;
+  assign boot_rx_sel_o = boot_rx_sel_int;
+  assign core_running_o = core_rst_n;
+  assign core_pc_seen_o = core_pc_seen_q;
+  assign uart_mmio_seen_o = uart_mmio_seen_q;
+  assign uart_tx_fire_seen_o = uart_tx_fire_seen_q;
+  assign uart_tx_busy_seen_o = uart_tx_busy_seen_q;
+  assign dmem_req_seen_o = dmem_req_seen_q;
+  assign dmem_store_seen_o = dmem_store_seen_q;
+  assign dmem_rsp_seen_o = dmem_rsp_seen_q;
+  assign mem_stall_seen_o = mem_stall_seen_q;
+  assign wb_seen_o = wb_seen_q;
+  assign boot_word0_ok_o = boot_word0_ok_int;
+  assign boot_word1_ok_o = boot_word1_ok_int;
+  assign boot_word2_ok_o = boot_word2_ok_int;
+  assign boot_word3_ok_o = boot_word3_ok_int;
+  assign boot_header_ok_o = boot_header_ok_int;
+  assign boot_verify0_ok_o = boot_verify0_ok_int;
+  assign boot_verify1_ok_o = boot_verify1_ok_int;
+  assign boot_verify2_ok_o = boot_verify2_ok_int;
+  assign boot_verify0_w0_ok_o = boot_verify0_w0_ok_int;
+  assign boot_verify0_w1_ok_o = boot_verify0_w1_ok_int;
+  assign boot_verify0_w2_ok_o = boot_verify0_w2_ok_int;
+  assign boot_verify0_w3_ok_o = boot_verify0_w3_ok_int;
+  assign boot_verify0_wordrev_ok_o = boot_verify0_wordrev_ok_int;
+  assign boot_verify0_byterev32_ok_o = boot_verify0_byterev32_ok_int;
+  assign boot_verify0_byterev128_ok_o = boot_verify0_byterev128_ok_int;
+  assign boot_verify0_memtest0_ok_o = boot_verify0_memtest0_ok_int;
+  assign boot_verify_req_seen_o = boot_verify_req_seen_int;
+  assign boot_verify_rsp_seen_o = boot_verify_rsp_seen_int;
+  assign boot_memtest_pass_o = boot_memtest_pass_int;
+  assign boot_memtest_done_o = boot_memtest_done_int;
+  assign boot_memtest_rd_seen_o = boot_memtest_rd_seen_int;
+  assign boot_memtest0_ok_o = boot_memtest0_ok_int;
+  assign boot_memtest1_ok_o = boot_memtest1_ok_int;
+  assign boot_memtest2_ok_o = boot_memtest2_ok_int;
+  assign boot_memtest3_ok_o = boot_memtest3_ok_int;
 
   // ================= IF =================
   wire [31:0] if_pc;
@@ -516,7 +842,7 @@ module icache_pipeline_top #(
     .wb_sel_o         (id_wb_sel),
     .reg_write_o      (id_reg_write),
     .br_funct3_o      (id_br_funct3),
-    .pc_o             (),// pc 值，可有可無
+    .pc_o             (),// pc ?��?�可??�可?��
     .id_ready_o       (id_ready),
     .id_shift_right_o (id_shift_right),
     .id_shift_arith_o (id_shift_arith),
@@ -682,7 +1008,7 @@ module icache_pipeline_top #(
     .ex_store_data_o   (ex_store_data),
     .ex_pc4_o          (ex_pc4),
     .ex_br_taken_o     (ex_br_taken),
-    .ex_br_target_o    (),//我已經在top做計算，不需要再ex才做target才做計算
+    .ex_br_target_o    (),//??�已經在top??��?��?��?��?��?要�?�ex??��?�target??��?��?��??
     .redirect_valid_o  (),
     .redirect_pc_o     (ex_redirect_pc_raw)
   );
@@ -842,6 +1168,41 @@ module icache_pipeline_top #(
 
   always @(posedge core_clk or negedge core_rst_n) begin
     if (!core_rst_n) begin
+      if_pc_prev_q        <= RESET_PC;
+      core_pc_seen_q      <= 1'b0;
+      uart_mmio_seen_q    <= 1'b0;
+      uart_tx_fire_seen_q <= 1'b0;
+      uart_tx_busy_seen_q <= 1'b0;
+      dmem_req_seen_q     <= 1'b0;
+      dmem_store_seen_q   <= 1'b0;
+      dmem_rsp_seen_q     <= 1'b0;
+      mem_stall_seen_q    <= 1'b0;
+      wb_seen_q           <= 1'b0;
+    end else begin
+      if (if_pc != if_pc_prev_q)
+        core_pc_seen_q <= 1'b1;
+      if_pc_prev_q <= if_pc;
+      if (dmem_req_o)
+        dmem_req_seen_q <= 1'b1;
+      if (dmem_req_o && dmem_we_o && ~uart_mmio_hit)
+        dmem_store_seen_q <= 1'b1;
+      if (dmem_rvalid_i && ~uart_mmio_hit)
+        dmem_rsp_seen_q <= 1'b1;
+      if (mem_stall)
+        mem_stall_seen_q <= 1'b1;
+      if (rf_we)
+        wb_seen_q <= 1'b1;
+      if (uart_mmio_fire)
+        uart_mmio_seen_q <= 1'b1;
+      if (uart_mmio_tx_fire)
+        uart_tx_fire_seen_q <= 1'b1;
+      if (uart_tx_busy)
+        uart_tx_busy_seen_q <= 1'b1;
+    end
+  end
+
+  always @(posedge core_clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
       uart_tx_data_q <= 8'h00;
       uart_tx_en_q   <= 1'b0;
       uart_rx_ff1_q  <= 1'b1;
@@ -993,10 +1354,10 @@ module icache_pipeline_top #(
     .rf_we_o        (rf_we),
     .rf_waddr_o     (rf_waddr),
     .rf_wdata_o     (rf_wdata),
-    //目前 已經有 forwarding，只是用的是 mem_wb 輸出的 wb_rd_wen / wb_rd / wb_wdata 直接餵給 forward_unit
-    .wb_fwd_valid_o (),//這個週期 WB 有有效寫回
-    .wb_fwd_rd_o    (),//被寫回的目的暫存器編號
-    .wb_fwd_data_o  ()//要寫回的資料
+    //?��??? 已�?��?? forwarding，只?��?��??�是 mem_wb 輸出??? wb_rd_wen / wb_rd / wb_wdata ?��?��餵給 forward_unit
+    .wb_fwd_valid_o (),//?��?��?��?? WB ??��?��?�寫???
+    .wb_fwd_rd_o    (),//被寫??��?�目??�暫存器編�??
+    .wb_fwd_data_o  ()//要寫??��?��?��??
   );
 
   // Expose WB for TB
@@ -1067,4 +1428,161 @@ module icache_pipeline_top #(
   end
 `endif
 
+endmodule
+
+module ddr_app_memtest #(
+  parameter [26:0] TEST_BASE_ADDR = 27'd0,
+  parameter integer WAIT_CYCLES = 512
+) (
+  input               clk,
+  input               start_i,
+  output reg [26:0]   app_addr,
+  output reg [2:0]    app_cmd,
+  output reg          app_en,
+  output reg [127:0]  app_wdf_data,
+  output reg          app_wdf_end,
+  output reg [15:0]   app_wdf_mask,
+  output reg          app_wdf_wren,
+  input [127:0]       app_rd_data,
+  input               app_rd_data_end,
+  input               app_rd_data_valid,
+  input               app_rdy,
+  input               app_wdf_rdy,
+  output reg          done_o,
+  output reg          pass_o,
+  output reg          rd_seen_o,
+  output reg          beat0_ok_o,
+  output reg          beat1_ok_o,
+  output reg          beat2_ok_o,
+  output reg          beat3_ok_o
+);
+  localparam [2:0] MIG_CMD_WRITE = 3'b000;
+  localparam [2:0] MIG_CMD_READ  = 3'b001;
+
+  localparam [2:0] S_IDLE    = 3'd0;
+  localparam [2:0] S_WR_REQ  = 3'd1;
+  localparam [2:0] S_WR_WAIT = 3'd2;
+  localparam [2:0] S_RD_REQ  = 3'd3;
+  localparam [2:0] S_RD_WAIT = 3'd4;
+  localparam [2:0] S_DONE    = 3'd5;
+
+  localparam integer WAIT_W = (WAIT_CYCLES <= 1) ? 1 : $clog2(WAIT_CYCLES + 1);
+
+  reg [2:0] state_q;
+  reg [WAIT_W-1:0] wait_cnt_q;
+  reg [1:0] test_idx_q;
+
+  function [127:0] test_wdata;
+    input [1:0] idx;
+    begin
+      case (idx)
+        2'd0: test_wdata = 128'h0123_4567_89AB_CDEF_FEDC_BA98_7654_3210;
+        2'd1: test_wdata = 128'h89AB_CDEF_0123_4567_7654_3210_FEDC_BA98;
+        2'd2: test_wdata = 128'h55AA_33CC_0F0F_F0F0_A5A5_5A5A_9696_6969;
+        default: test_wdata = 128'hDEAD_BEEF_CAFE_1234_1357_9BDF_2468_ACED;
+      endcase
+    end
+  endfunction
+
+  always @(*) begin
+    app_addr     = TEST_BASE_ADDR + ({25'd0, test_idx_q} << 4);
+    app_cmd      = MIG_CMD_WRITE;
+    app_en       = 1'b0;
+    app_wdf_data = test_wdata(test_idx_q);
+    app_wdf_end  = 1'b0;
+    app_wdf_mask = 16'h0000;
+    app_wdf_wren = 1'b0;
+
+    case (state_q)
+      S_WR_REQ: begin
+        app_cmd      = MIG_CMD_WRITE;
+        app_en       = app_rdy && app_wdf_rdy;
+        app_wdf_wren = app_rdy && app_wdf_rdy;
+        app_wdf_end  = app_rdy && app_wdf_rdy;
+      end
+      S_RD_REQ: begin
+        app_cmd      = MIG_CMD_READ;
+        app_en       = app_rdy;
+      end
+      default: begin
+      end
+    endcase
+  end
+
+  always @(posedge clk) begin
+    if (!start_i) begin
+      state_q    <= S_IDLE;
+      wait_cnt_q <= {WAIT_W{1'b0}};
+      test_idx_q <= 2'd0;
+      done_o     <= 1'b0;
+      pass_o     <= 1'b0;
+      rd_seen_o  <= 1'b0;
+      beat0_ok_o <= 1'b0;
+      beat1_ok_o <= 1'b0;
+      beat2_ok_o <= 1'b0;
+      beat3_ok_o <= 1'b0;
+    end else begin
+      case (state_q)
+        S_IDLE: begin
+          done_o     <= 1'b0;
+          pass_o     <= 1'b0;
+          rd_seen_o  <= 1'b0;
+          beat0_ok_o <= 1'b0;
+          beat1_ok_o <= 1'b0;
+          beat2_ok_o <= 1'b0;
+          beat3_ok_o <= 1'b0;
+          wait_cnt_q <= {WAIT_W{1'b0}};
+          test_idx_q <= 2'd0;
+          state_q    <= S_WR_REQ;
+        end
+        S_WR_REQ: begin
+          if (app_rdy && app_wdf_rdy) begin
+            wait_cnt_q <= WAIT_CYCLES[WAIT_W-1:0];
+            state_q    <= S_WR_WAIT;
+          end
+        end
+        S_WR_WAIT: begin
+          if (wait_cnt_q != {WAIT_W{1'b0}})
+            wait_cnt_q <= wait_cnt_q - 1'b1;
+          else if (test_idx_q == 2'd3) begin
+            test_idx_q <= 2'd0;
+            state_q <= S_RD_REQ;
+          end else begin
+            test_idx_q <= test_idx_q + 1'b1;
+            state_q <= S_WR_REQ;
+          end
+        end
+        S_RD_REQ: begin
+          if (app_rdy)
+            state_q <= S_RD_WAIT;
+        end
+        S_RD_WAIT: begin
+          if (app_rd_data_valid && app_rd_data_end) begin
+            rd_seen_o <= 1'b1;
+            case (test_idx_q)
+              2'd0: beat0_ok_o <= (app_rd_data == test_wdata(test_idx_q));
+              2'd1: beat1_ok_o <= (app_rd_data == test_wdata(test_idx_q));
+              2'd2: beat2_ok_o <= (app_rd_data == test_wdata(test_idx_q));
+              default: beat3_ok_o <= (app_rd_data == test_wdata(test_idx_q));
+            endcase
+            if (test_idx_q == 2'd3) begin
+              pass_o  <= beat0_ok_o &
+                         beat1_ok_o &
+                         beat2_ok_o &
+                         (app_rd_data == test_wdata(test_idx_q));
+              done_o  <= 1'b1;
+              state_q <= S_DONE;
+            end else begin
+              test_idx_q <= test_idx_q + 1'b1;
+              state_q    <= S_RD_REQ;
+            end
+          end
+        end
+        default: begin
+          done_o   <= 1'b1;
+          state_q  <= S_DONE;
+        end
+      endcase
+    end
+  end
 endmodule

@@ -1,26 +1,41 @@
-# Minimal board-level constraints for the current board_top.
+# Minimal board-level constraints for board_top.
 # This file only constrains non-DDR board IO.
 # All ddr2_* pins must be constrained by the active DDR2 MIG-generated XDC.
 
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]
 
-# System clock input: onboard 100 MHz oscillator.
+# board_top: system clock input (onboard 100 MHz oscillator).
 set_property -dict { PACKAGE_PIN E3 IOSTANDARD LVCMOS33 } [get_ports { sys_clk_i }]
-create_clock -name sys_clk_i_clk -period 10.000 -waveform {0.000 5.000} [get_ports { sys_clk_i }]
+# Clock is defined in clk_wiz_0.xdc. Keep a single create_clock source to
+# avoid overriding warnings and dropped clock-referenced constraints.
 
-# Active-low reset button (cpu_resetn).
+# board_top: active-low reset button (CPU_RESETN).
 set_property -dict { PACKAGE_PIN C12 IOSTANDARD LVCMOS33 } [get_ports { rst_n }]
+set_property PULLUP true [get_ports { rst_n }]
 
-# Onboard USB-UART bridge.
+# board_top: onboard USB-UART bridge.
 # C4: USB-UART TX into FPGA
 # D4: FPGA TX out to USB-UART RX
 set_property -dict { PACKAGE_PIN C4 IOSTANDARD LVCMOS33 } [get_ports { uart_rx_i }]
 set_property -dict { PACKAGE_PIN D4 IOSTANDARD LVCMOS33 } [get_ports { uart_tx_o }]
 
-# Status LEDs.
+# board_top: status LEDs.
 set_property -dict { PACKAGE_PIN H17 IOSTANDARD LVCMOS33 } [get_ports { status_o[0] }]
 set_property -dict { PACKAGE_PIN K15 IOSTANDARD LVCMOS33 } [get_ports { status_o[1] }]
+set_property -dict { PACKAGE_PIN N14 IOSTANDARD LVCMOS33 } [get_ports { status_o[2] }]
+set_property -dict { PACKAGE_PIN R18 IOSTANDARD LVCMOS33 } [get_ports { status_o[3] }]
+set_property -dict { PACKAGE_PIN V17 IOSTANDARD LVCMOS33 } [get_ports { status_o[4] }]
+set_property -dict { PACKAGE_PIN U17 IOSTANDARD LVCMOS33 } [get_ports { status_o[5] }]
+set_property -dict { PACKAGE_PIN U16 IOSTANDARD LVCMOS33 } [get_ports { status_o[6] }]
+set_property -dict { PACKAGE_PIN V16 IOSTANDARD LVCMOS33 } [get_ports { status_o[7] }]
+set_property -dict { PACKAGE_PIN T15 IOSTANDARD LVCMOS33 } [get_ports { status_o[8] }]
+set_property -dict { PACKAGE_PIN U14 IOSTANDARD LVCMOS33 } [get_ports { status_o[9] }]
+set_property -dict { PACKAGE_PIN T16 IOSTANDARD LVCMOS33 } [get_ports { status_o[10] }]
+set_property -dict { PACKAGE_PIN V15 IOSTANDARD LVCMOS33 } [get_ports { status_o[11] }]
+set_property -dict { PACKAGE_PIN V14 IOSTANDARD LVCMOS33 } [get_ports { status_o[12] }]
+set_property -dict { PACKAGE_PIN V12 IOSTANDARD LVCMOS33 } [get_ports { status_o[13] }]
+set_property -dict { PACKAGE_PIN V11 IOSTANDARD LVCMOS33 } [get_ports { status_o[14] }]
 set_property -dict { PACKAGE_PIN J13 IOSTANDARD LVCMOS33 } [get_ports { ifetch_err_o }]
 
 ## This file is a general .xdc for the Nexys A7-100T

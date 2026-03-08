@@ -1558,13 +1558,13 @@ module icache_pipeline_tb;
 endmodule
 
 // ----------------------------------------------------------------------------
-// Simplified MIG model for simulation (used by MIG_DDR2_interface.v wrapper).
+// Simplified MIG model for simulation (used by MIG_DDR2_interface wrapper).
 // - app_addr is 16-byte aligned address (addr[31:4])
 // - app_cmd: 3'b001 read, 3'b000 write
 // - app_wdf_mask: 1=mask (no write), 0=write
 // - Fixed 2-cycle read latency, always-ready interface
 // ----------------------------------------------------------------------------
-module mig_mig (
+module mig_7series_0_mig (
   output [12:0]                       ddr2_addr,
   output [2:0]                        ddr2_ba,
   output                              ddr2_cas_n,
@@ -1837,15 +1837,15 @@ module mig_mig (
         endcase
       end else begin
         // Some simulators may not allow reading the same plusarg twice.
-        // Reuse TB-selected memfile as a robust fallback.
-        memfile = icache_pipeline_tb.memfile;
+        // Use a local default fallback when no plusarg is visible here.
+        memfile = "TEST_FILES/program_ddr.mem";
         memfile_base = "program_ddr.mem";
       end
     end
     resolve_mig_memfile(memfile, memfile_base, memfile_is_plusarg, memfile_found);
     if (!memfile_found) begin
-      // Fallback to the top TB-selected memfile when simulator cwd differs.
-      memfile = icache_pipeline_tb.memfile;
+      // Retry with local default path when simulator cwd differs.
+      memfile = "TEST_FILES/program_ddr.mem";
       memfile_base = "program_ddr.mem";
       resolve_mig_memfile(memfile, memfile_base, 1'b1, memfile_found);
     end

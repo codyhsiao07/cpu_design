@@ -231,13 +231,13 @@ module l2_cache_core
     localparam [2:0] MIG_CMD_READ  = 3'b001;
     localparam [2:0] MIG_CMD_WRITE = 3'b000;
 
-    // MIG address translation: app_addr = (PA - DDR_BASE) >> 4
+    // MIG address translation: native app_addr is byte-domain for this x16 DDR2 MIG.
     function [26:0] pa_to_app_addr16;
         input [31:0] pa16_aligned;
         reg   [31:0] off;
         begin
             off = pa16_aligned - DDR_BASE;
-            pa_to_app_addr16 = off[31:4];
+            pa_to_app_addr16 = off[26:0];
         end
     endfunction
 
@@ -674,5 +674,4 @@ module l2_cache_core
     end
 
 endmodule
-
 

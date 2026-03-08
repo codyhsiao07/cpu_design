@@ -78,10 +78,19 @@ make
 python uart_send_mem.py --port COM5 --baud 115200 --mem TEST_FILES/mem_game.mem
 ```
 
+目前 `uart_send_mem.py` 會先送一個同步字（`0xC0DE5A5A`），再送長度與資料，
+用來避免上電初期雜訊造成 bootloader 長度解析錯誤。
+
 若要保守一點，可加延遲：
 
 ```powershell
 python uart_send_mem.py --port COM5 --baud 115200 --mem TEST_FILES/mem_game.mem --delay 1.0
+```
+
+快速鏈路測試（只送 sync + 長度 0）：
+
+```powershell
+python uart_send_mem.py --port COM5 --baud 115200 --mem TEST_FILES/mem_game.mem --delay 1.0 --zero
 ```
 
 ## 7. 開終端機觀察輸出
@@ -141,5 +150,8 @@ python uart_send_mem.py --port COM5 --baud 115200 --mem TEST_FILES/mem_game.mem 
 檢查：
 1. `TEST_FILES/mem_game.mem` 是否已重新產生
 2. bitstream 是否是最新版本
-3. MIG 是否完成初始化（`LED0` 亮）
-4. bootloader 是否完成（`LED1` 亮）
+3. MIG 是否完成初始化（`H17 = status_o[0]` 亮）
+4. bootloader reset 是否釋放（`K15 = status_o[1]` 亮）
+5. 是否抓到 sync（`N14 = status_o[2]` 亮）
+6. 板載 UART RX pin 是否有活動（`R18 = status_o[3]`，sticky）
+7. 是否有解到任意 UART byte（`J13 = ifetch_err_o` 亮）
