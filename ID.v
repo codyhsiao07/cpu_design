@@ -57,7 +57,7 @@ module id_stage (
   output [4:0]  rs1_o,
   output [4:0]  rs2_o,
   output [4:0]  rd_o,
-  output [2:0]  alu_op_o,       // Coarse ALU op, detailed by EX
+  output [3:0]  alu_op_o,       // Coarse ALU op, detailed by EX
   output        alu_src_imm_o,  // 1: srcB=imm, 0: srcB=rs2
   output        branch_o,       // B-type
   output        jal_o,          // JAL
@@ -111,15 +111,23 @@ module id_stage (
   localparam [6:0] OP_SYSTEM = 7'b1110011; // (ecall/ebreak/csrr*)
 
   // -------- ALU op encoding (3-bit) --------
-  localparam [2:0] ALU_ADD = 3'b000;
-  localparam [2:0] ALU_SUB = 3'b001;
-  localparam [2:0] ALU_SLT = 3'b010;
-  localparam [2:0] ALU_SLTU= 3'b011;
-  localparam [2:0] ALU_XOR = 3'b100;
-  localparam [2:0] ALU_OR  = 3'b101;
-  localparam [2:0] ALU_AND = 3'b110;
-  localparam [2:0] ALU_SLL = 3'b111; // SHIFT group (SLL/SRL/SRA decided by flags)
-
+  localparam [3:0] ALU_ADD = 4'b0000;
+  localparam [3:0] ALU_SUB = 4'b0001;
+  localparam [3:0] ALU_SLT = 4'b0010;
+  localparam [3:0] ALU_SLTU= 4'b0011;
+  localparam [3:0] ALU_XOR = 4'b0100;
+  localparam [3:0] ALU_OR  = 4'b0101;
+  localparam [3:0] ALU_AND = 4'b0110;
+  localparam [3:0] ALU_SLL = 4'b0111; // SHIFT group (SLL/SRL/SRA decided by flags)
+  localparam [3:0] ALU_MUL   = 4'b1000;
+  localparam [3:0] ALU_MULH  = 4'b1001;
+  localparam [3:0] ALU_MULHSU= 4'b1010;
+  localparam [3:0] ALU_MULHU = 4'b1011;
+  localparam [3:0] ALU_DIV   = 4'b1100;
+  localparam [3:0] ALU_DIVU  = 4'b1101;
+  localparam [3:0] ALU_REM   = 4'b1110;
+  localparam [3:0] ALU_REMU  = 4'b1111;
+    
   // -------- WB mux encoding --------
   localparam [1:0] WB_ALU = 2'b00; // ALU result
   localparam [1:0] WB_MEM = 2'b01; // Memory read data
@@ -134,7 +142,7 @@ module id_stage (
   wire [31:0] imm_j = {{11{id_instr_i[31]}}, id_instr_i[31], id_instr_i[19:12], id_instr_i[20], id_instr_i[30:21], 1'b0};
 
   // -------- Control defaults --------
-  reg [2:0] alu_op;
+  reg [3:0] alu_op;
   reg       alu_src_imm;
   reg       branch, jal, jalr;
   reg       mem_read, mem_write;
@@ -244,23 +252,49 @@ module id_stage (
       OP_OP: begin
         reg_write   = 1'b1;
         alu_src_imm = 1'b0;
-        case (funct3)
-          3'b000: alu_op = (funct7[5] ? ALU_SUB : ALU_ADD);
-          3'b001: begin // SLL
-            alu_op      = ALU_SLL;
-            shift_right = 1'b0;
-          end
-          3'b101: begin // SRL / SRA via funct7[5]
-            alu_op      = ALU_SLL;
-            shift_right = 1'b1;
-            shift_arith = funct7[5];  // 0=SRL, 1=SRA
-          end
-          3'b010: alu_op = ALU_SLT;
-          3'b011: alu_op = ALU_SLTU;
-          3'b100: alu_op = ALU_XOR;
-          3'b110: alu_op = ALU_OR;
-          3'b111: alu_op = ALU_AND;
-        endcase
+        
+        // RV32M extension
+        if (funct7 == 7'b0000001) begin
+          case (funct3)
+            3'b000: alu_op = ALU_MUL;   // MUL
+            3'b001: alu_op = ALU_MULH;  // MULH
+            3'b010: alu_op = ALU_MULHSU;// MULHSU
+            3'b011: alu_op = ALU_MULHU; // MULHU
+            3'b100: alu_op = ALU_DIV;   // DIV
+            3'b101: alu_op = ALU_DIVU;  // DIVU
+            3'b110: alu_op = ALU_REM;   // REM
+            3'b111: alu_op = ALU_REMU;  // REMU
+          endcase
+        end
+        // RV32I normal ALU
+        else begin
+          case (funct3)
+      // ADD / SUB
+            3'b000: alu_op = (funct7[5] ? ALU_SUB : ALU_ADD);
+      // SLL
+            3'b001: begin
+              alu_op      = ALU_SLL;
+              shift_right = 1'b0;
+            end
+      // SLT
+            3'b010: alu_op = ALU_SLT;
+      // SLTU
+            3'b011: alu_op = ALU_SLTU;
+      // XOR
+            3'b100: alu_op = ALU_XOR;
+      // SRL / SRA
+            3'b101: begin
+              alu_op      = ALU_SLL;
+              shift_right = 1'b1;
+              shift_arith = funct7[5]; // 0 = SRL, 1 = SRA
+            end
+      // OR
+            3'b110: alu_op = ALU_OR;
+      // AND
+            3'b111: alu_op = ALU_AND;
+          endcase
+        end
+        
       end
       default: begin
         // keep defaults

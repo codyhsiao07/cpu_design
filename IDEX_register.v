@@ -19,7 +19,7 @@ module id_ex_reg (
   input  [4:0]  id_rs2_i,
   input  [4:0]  id_rd_i,
 
-  input  [2:0]  id_alu_op_i,
+  input  [3:0]  id_alu_op_i,
   input         id_alu_src_imm_i,
   input         id_branch_i,
   input         id_jal_i,
@@ -53,7 +53,7 @@ module id_ex_reg (
   output [4:0]  ex_rs2_o,
   output [4:0]  ex_rd_o,
 
-  output [2:0]  ex_alu_op_o,
+  output [3:0]  ex_alu_op_o,
   output        ex_alu_src_imm_o,
   output        ex_branch_o,
   output        ex_jal_o,
@@ -76,7 +76,8 @@ module id_ex_reg (
   reg [31:0] pc_q, rs1_q, rs2_q, imm_q;
   reg [4:0]  rs1r_q, rs2r_q, rdr_q;
 
-  reg [2:0]  alu_op_q, br_funct3_q;
+  reg [2:0]  br_funct3_q;
+  reg [3:0]  alu_op_q;
   reg        alu_src_imm_q, branch_q, jal_q, jalr_q;
   reg        mem_read_q, mem_write_q, reg_write_q;
   reg [1:0]  wb_sel_q;
@@ -110,7 +111,7 @@ module id_ex_reg (
   wire [4:0]  rs2r_d      = kill_issue ? 5'b0     : (stall_i ? rs2r_q     : id_rs2_i);
   wire [4:0]  rdr_d       = kill_issue ? 5'b0     : (stall_i ? rdr_q      : id_rd_i);
 
-  wire [2:0]  alu_op_d    = kill_issue ? 3'b000   : (stall_i ? alu_op_q   : id_alu_op_i);
+  wire [3:0]  alu_op_d    = kill_issue ? 4'b0000   : (stall_i ? alu_op_q   : id_alu_op_i);
   wire        alu_src_d   = kill_issue ? 1'b0     : (stall_i ? alu_src_imm_q : id_alu_src_imm_i);
   wire        branch_d    = kill_issue ? 1'b0     : (stall_i ? branch_q    : id_branch_i);
   wire        jal_d       = kill_issue ? 1'b0     : (stall_i ? jal_q       : id_jal_i);
@@ -139,7 +140,7 @@ module id_ex_reg (
       rs1r_q         <= 5'b0;
       rs2r_q         <= 5'b0;
       rdr_q          <= 5'b0;
-      alu_op_q       <= 3'b000;
+      alu_op_q       <= 4'b0000;
       alu_src_imm_q  <= 1'b0;
       branch_q       <= 1'b0;
       jal_q          <= 1'b0;

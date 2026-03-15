@@ -29,7 +29,8 @@ module hazard_unit #(
   //add/lw/jal → 1
   //sw/branch → 0
   input        ex_mem_read_i,  // EX stage 這條指令是不是「load 類
-
+  
+  input        ex_stall_req_i,
   // ===== MEM stage =====
   input        mem_valid_i,//指令有效性
   input  [4:0] mem_rd_i,//MEM stage 指令目的寄存器 rd。用途同 ex_rd_i
@@ -104,12 +105,16 @@ module hazard_unit #(
   wire structural_stall_front = ifetch_stall_i | mem_stall_i; // IF/ID
   wire structural_stall_back  = mem_stall_i;                  // EX/EXMEM only MEM
 
-  assign stall_if_o    = structural_stall_front | stall_for_data;
-  assign stall_id_o    = structural_stall_front | stall_for_data;
+  wire ex_long_stall = ex_stall_req_i;
 
-  // Do not stall EX for I-fetch stall; let older instructions drain.
-  assign stall_ex_o    = structural_stall_back;
-  assign stall_exmem_o = structural_stall_back;
+  assign stall_if_o    = structural_stall_front | stall_for_data | ex_long_stall;
+  assign stall_id_o    = structural_stall_front | stall_for_data | ex_long_stall;
+
+  // EX mul/div running: hold ID/EX so the same instruction stays in EX
+  assign stall_ex_o    = structural_stall_back  | ex_long_stall;
+
+  // Also hold EX/MEM so half-finished EX results are not captured downstream
+  assign stall_exmem_o = structural_stall_back  | ex_long_stall;
 
   // ---------- Flush logic ----------
   // - redirect: flush IF/ID and ID/EX to discard wrong-path instructions

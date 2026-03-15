@@ -802,7 +802,7 @@ module icache_pipeline_top #(
   // ================= ID =================
   wire [31:0] id_rs1_val, id_rs2_val, id_imm;
   wire [4:0]  id_rs1, id_rs2, id_rd;
-  wire [2:0]  id_alu_op;
+  wire [3:0]  id_alu_op;
   wire        id_alu_src_imm, id_branch, id_jal, id_jalr;
   wire        id_mem_read, id_mem_write, id_reg_write;
   wire [1:0]  id_wb_sel;
@@ -863,7 +863,8 @@ module icache_pipeline_top #(
   // ================= ID/EX =================
   wire [31:0] ex_pc, ex_rs1_val, ex_rs2_val, ex_imm;
   wire [4:0]  ex_rs1, ex_rs2, ex_rd;
-  wire [2:0]  ex_alu_op, ex_br_funct3;
+  wire [2:0]  ex_br_funct3;
+  wire [3:0]  ex_alu_op;
   wire        ex_alu_src_imm, ex_branch, ex_jal, ex_jalr;
   wire        ex_mem_read, ex_mem_write, ex_reg_write;
   wire [1:0]  ex_wb_sel;
@@ -872,7 +873,6 @@ module icache_pipeline_top #(
   wire        ex_pred_taken;
   wire [31:0] ex_pred_target;
   wire        ex_br_taken;
-
   wire        bp_pred_taken;
   wire        bp_update_valid = ex_valid & ex_branch & ~stall_ex;
   wire        id_pred_taken = id_valid & id_is_ctrl &
@@ -963,7 +963,7 @@ module icache_pipeline_top #(
   wire        mem_load_valid;
   wire        mem_load_active;
   wire        mem_stall;
-
+  wire        ex_stall_o;
   wire        wb_rd_wen;
   wire [4:0]  wb_rd;
   wire [31:0] wb_wdata;
@@ -990,6 +990,9 @@ module icache_pipeline_top #(
   );
 
   ex_stage u_ex (
+    .clk               (core_clk),
+    .rst_n             (core_rst_n),
+    .ex_valid_i        (ex_valid),
     .ex_pc_i           (ex_pc),
     .ex_rs1_val_i      (ex_rs1_val_fwd),
     .ex_rs2_val_i      (ex_rs2_val_fwd),
@@ -1004,6 +1007,7 @@ module icache_pipeline_top #(
     .ex_shift_arith_i  (ex_shift_arith),
     .ex_is_auipc_i     (ex_is_auipc),
     .ex_is_lui_i       (ex_is_lui),
+    .ex_stall_o        (ex_stall_o),
     .ex_alu_result_o   (ex_alu_result),
     .ex_store_data_o   (ex_store_data),
     .ex_pc4_o          (ex_pc4),
@@ -1378,6 +1382,7 @@ module icache_pipeline_top #(
     .ex_rd_i            (ex_rd),
     .ex_reg_write_i     (ex_reg_write),
     .ex_mem_read_i      (ex_mem_read),
+    .ex_stall_req_i     (ex_stall_o),
     .mem_valid_i        (mem_valid),
     .mem_rd_i           (mem_rd),
     .mem_reg_write_i    (mem_reg_write),
