@@ -59,7 +59,10 @@ module uart_bootloader #(
   localparam [2:0] MIG_CMD_WRITE = 3'b000;
   localparam [2:0] MIG_CMD_READ  = 3'b001;
   localparam [31:0] SYNC_WORD    = 32'hC0DE5A5A;
-  localparam [31:0] MAX_BYTES    = 32'd1_048_576; // 1 MiB guard
+  // The launcher suite now uses separated DDR regions for menu and games, so
+  // the packed upload can legitimately exceed 1 MiB. Keep a guard, but size it
+  // for the current DDR map instead of rejecting valid images.
+  localparam [31:0] MAX_BYTES    = 32'd8_388_608; // 8 MiB guard
   localparam integer TIMEOUT_CYCLES = CLK_HZ;     // 1 second at local clock
   localparam integer TIMEOUT_W      = $clog2(TIMEOUT_CYCLES + 1);
   localparam integer VERIFY_WAIT_CYCLES = 512;

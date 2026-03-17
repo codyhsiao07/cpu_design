@@ -1,4 +1,5 @@
 import argparse
+import os
 import struct
 import sys
 import threading
@@ -53,7 +54,21 @@ def listen_for_rx(ser, idle_seconds):
         print("No RX data observed during listen window.", file=sys.stderr)
 
 
-def interactive_terminal(ser):
+def interactive_hint_for_mem(mem_path):
+    name = os.path.basename(mem_path).lower()
+
+    if "gomoku" in name:
+        return "Menu: w/s select, Space or Enter confirm. Game: w/a/s/d move, Space or Enter place, r restart, m menu, q quit."
+    if "breakout" in name:
+        return "Keys: a/d move paddle, Space launch, r restart, q quit."
+    if "tetris" in name:
+        return "Keys: a/d move, w/x rotate, s soft drop, Space hard drop, q quit."
+    if ("tic" in name) or ("game" in name):
+        return "Enter board input directly, e.g. 11 or 23."
+    return "Keyboard input is forwarded directly to the board UART."
+
+
+def interactive_terminal(ser, hint_text=None):
     stop_evt = threading.Event()
 
     def rx_worker():
@@ -72,7 +87,8 @@ def interactive_terminal(ser):
     rx_thread.start()
 
     print("Interactive UART terminal. Ctrl+C to exit.", file=sys.stderr)
-    print("Type game input directly, e.g. 11 or 23.", file=sys.stderr)
+    if hint_text:
+        print(hint_text, file=sys.stderr)
 
     try:
         if msvcrt is not None:
@@ -124,6 +140,8 @@ def main():
                    help="seconds to keep listening after the last received byte")
     p.add_argument("--interactive", action="store_true",
                    help="after upload, keep COM open and forward keyboard input to UART")
+    p.add_argument("--input-hint", default="",
+                   help="override the interactive input hint text")
     args = p.parse_args()
 
     payload = b"" if args.zero else load_mem(args.mem)
@@ -156,7 +174,8 @@ def main():
         if args.listen:
             listen_for_rx(ser, args.listen_seconds)
         if args.interactive:
-            interactive_terminal(ser)
+            hint_text = args.input_hint if args.input_hint else interactive_hint_for_mem(args.mem)
+            interactive_terminal(ser, hint_text)
 
 
 if __name__ == "__main__":

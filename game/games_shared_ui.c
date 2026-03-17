@@ -11,9 +11,20 @@
 #define UART_TX_STATUS (*(volatile unsigned int *)0x40000004u)
 #define UART_RX_DATA   (*(volatile unsigned int *)0x40000008u)
 #define UART_RX_STATUS (*(volatile unsigned int *)0x4000000Cu)
+#define UART_LAUNCHER_STATUS (*(volatile unsigned int *)0x40000010u)
+#define UART_LAUNCHER_RESET  (*(volatile unsigned int *)0x40000014u)
 #endif
 
 #endif
+
+#define UI_INPUT_BARRIER_DRAIN 256u
+#define UI_LAUNCHER_RELEASE_POLLS 64u
+#define UI_LAUNCHER_RELEASE_SPIN 400u
+
+static ui_input_policy_t ui_input_policy = UI_INPUT_POLICY_NORMAL;
+static int ui_q_arm_active = 0;
+static unsigned int ui_launcher_ignore_polls = 0u;
+static int ui_launcher_prev_pressed = 0;
 
 int ui_tx_ready(void)
 {
@@ -97,7 +108,7 @@ void ui_short_pause(unsigned int spins)
     }
 }
 
-int ui_read_byte_blocking(void)
+static int ui_read_byte_blocking_raw(void)
 {
 #if defined(GAME_USE_UART)
 #if defined(HOST_SIM_UART)
@@ -112,7 +123,7 @@ int ui_read_byte_blocking(void)
 #endif
 }
 
-int ui_read_byte_nonblocking(void)
+static int ui_read_byte_nonblocking_raw(void)
 {
 #if defined(GAME_USE_UART)
 #if defined(HOST_SIM_UART)
@@ -128,10 +139,150 @@ int ui_read_byte_nonblocking(void)
 #endif
 }
 
+static int ui_filter_input(int ch, int blocking)
+{
+    for (;;) {
+        if (ch < 0) {
+            return -1;
+        }
+
+        ch = ui_to_lower(ch);
+
+        if (ui_input_policy == UI_INPUT_POLICY_IGNORE_Q) {
+            if (ch == 'q') {
+                ch = blocking ? ui_read_byte_blocking_raw() : ui_read_byte_nonblocking_raw();
+                continue;
+            }
+            return ch;
+        }
+
+        if (ui_input_policy == UI_INPUT_POLICY_FILTER_DOUBLE_Q) {
+            if (ch == 'q') {
+                if (ui_q_arm_active) {
+                    ui_q_arm_active = 0;
+                    return ch;
+                }
+                ui_q_arm_active = 1;
+                ui_puts("\nPress q again to return to menu.\n");
+                ch = blocking ? ui_read_byte_blocking_raw() : ui_read_byte_nonblocking_raw();
+                continue;
+            }
+            ui_q_arm_active = 0;
+            return ch;
+        }
+
+        ui_q_arm_active = 0;
+        return ch;
+    }
+}
+
+int ui_read_byte_blocking(void)
+{
+    return ui_filter_input(ui_read_byte_blocking_raw(), 1);
+}
+
+int ui_read_byte_nonblocking(void)
+{
+    return ui_filter_input(ui_read_byte_nonblocking_raw(), 0);
+}
+
+void ui_drain_input_limited(unsigned int max_reads)
+{
+    unsigned int reads = 0u;
+
+    while (reads < max_reads && ui_read_byte_nonblocking_raw() >= 0) {
+        reads++;
+    }
+    ui_q_arm_active = 0;
+}
+
+void ui_drain_input(void)
+{
+    ui_drain_input_limited(128u);
+}
+
+void ui_input_barrier(void)
+{
+    ui_drain_input_limited(UI_INPUT_BARRIER_DRAIN);
+}
+
 int ui_to_lower(int ch)
 {
     if ((ch >= 'A') && (ch <= 'Z')) {
         return ch - 'A' + 'a';
     }
     return ch;
+}
+
+void ui_set_input_policy(ui_input_policy_t policy)
+{
+    ui_input_policy = policy;
+    ui_q_arm_active = 0;
+}
+
+int ui_launcher_button_pressed(void)
+{
+#if defined(GAME_USE_UART)
+#if defined(HOST_SIM_UART)
+    return 0;
+#else
+    return (UART_LAUNCHER_STATUS & 1u) != 0u;
+#endif
+#else
+    return 0;
+#endif
+}
+
+void ui_launcher_wait_button_release(void)
+{
+    unsigned int stable_polls = 0u;
+
+    while (stable_polls < UI_LAUNCHER_RELEASE_POLLS) {
+        if (ui_launcher_button_pressed()) {
+            stable_polls = 0u;
+        } else {
+            stable_polls++;
+        }
+        ui_short_pause(UI_LAUNCHER_RELEASE_SPIN);
+    }
+}
+
+void ui_launcher_ignore_button_polls(unsigned int polls)
+{
+    ui_launcher_ignore_polls = polls;
+}
+
+void ui_launcher_sync_button_state(void)
+{
+    ui_launcher_prev_pressed = ui_launcher_button_pressed();
+}
+
+int ui_launcher_menu_requested(void)
+{
+    int pressed = ui_launcher_button_pressed();
+
+    if (ui_launcher_ignore_polls != 0u) {
+        ui_launcher_ignore_polls--;
+        ui_launcher_prev_pressed = pressed;
+        return 0;
+    }
+
+    if (pressed && !ui_launcher_prev_pressed) {
+        ui_launcher_prev_pressed = pressed;
+        return 1;
+    }
+
+    ui_launcher_prev_pressed = pressed;
+    return 0;
+}
+
+void ui_launcher_request_menu(void)
+{
+#if defined(GAME_USE_UART)
+#if !defined(HOST_SIM_UART)
+    UART_LAUNCHER_RESET = 1u;
+    for (;;) {
+    }
+#endif
+#endif
 }

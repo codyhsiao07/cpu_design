@@ -72,6 +72,7 @@ module bp_redirect_scenarios_tb;
   ) dut (
     .clk                (clk),
     .rst_n              (rst_n),
+    .launcher_reset_req_i(1'b0),
     .uart_rx_i          (uart_rx_i),
     .uart_tx_o          (uart_tx_o),
     .ddr2_dq            (ddr2_dq),

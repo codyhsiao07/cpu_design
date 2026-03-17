@@ -1,8 +1,9 @@
-// Minimal startup for RV32I bare-metal tests.
-// - Set stack pointer
-// - Call main
-// - Move return value to x8 (s0/fp) for TB observability
-// - Spin forever
+// Startup for slot-based standalone game images.
+// - Set stack/gp
+// - Clear bss
+// - Run slot pre-main hook
+// - Call the original game's main
+// - Run slot post-main hook (jumps back to launcher menu)
 
     .section .text.start
     .globl _start
@@ -18,7 +19,8 @@ _start:
     addi t0, t0, 4
     jal  x0, 1b
 2:
+    call launcher_slot_before_main
     call main
-    addi x8, a0, 0
+    call launcher_slot_after_main
 3:
     jal  x0, 3b

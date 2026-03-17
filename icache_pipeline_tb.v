@@ -79,6 +79,7 @@ module icache_pipeline_tb;
   ) dut (
     .clk          (clk),
     .rst_n        (rst_n),
+    .launcher_reset_req_i(1'b0),
     .uart_rx_i    (uart_rx),
     .uart_tx_o    (uart_tx),
     .ddr2_dq      (ddr2_dq),
@@ -2032,4 +2033,3 @@ module mig_7series_0_mig (
   end
 
 endmodule
-

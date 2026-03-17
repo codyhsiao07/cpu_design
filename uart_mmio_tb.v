@@ -10,7 +10,7 @@ module uart_mmio_tb;
   localparam [31:0] UART_TX_STATUS_ADDR = 32'h4000_0004;
   localparam [31:0] UART_RX_DATA_ADDR   = 32'h4000_0008;
   localparam [31:0] UART_RX_STATUS_ADDR = 32'h4000_000C;
-  localparam [31:0] UART_BAD_ADDR       = 32'h4000_0010;
+  localparam [31:0] UART_BAD_ADDR       = 32'h4000_0018;
 
   reg clk;
   reg rst_n;
@@ -77,6 +77,7 @@ module uart_mmio_tb;
   ) dut (
     .clk                 (clk),
     .rst_n               (rst_n),
+    .launcher_reset_req_i(1'b0),
     .uart_rx_i           (uart_rx_i),
     .uart_tx_o           (uart_tx_o),
     .ddr2_dq             (ddr2_dq),

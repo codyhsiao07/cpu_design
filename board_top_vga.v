@@ -2,7 +2,7 @@
 // Final top-level wrapper for FPGA board integration.
 // Exposes only board-facing IO (clocks, reset, DDR2, UART, status).
 
-module board_top #(
+module board_top_vga #(
   parameter integer ADDR_WIDTH    = 32,
   parameter integer L2_DATA_W     = 64,
   parameter integer USE_MIG       = 1,
@@ -16,6 +16,7 @@ module board_top #(
   parameter [31:0]  RESET_PC      = 32'h8000_0000
 ) (
   input                   rst_n,
+  input                   launcher_btn_i,
   input                   uart_rx_i,
   output                  uart_tx_o,
 
@@ -35,6 +36,13 @@ module board_top #(
   output [1:0]            ddr2_dm,
   output [0:0]            ddr2_odt,
   input                   sys_clk_i,
+
+  // VGA outputs
+  output                  vga_hsync_o,
+  output                  vga_vsync_o,
+  output [3:0]            vga_red_o,
+  output [3:0]            vga_green_o,
+  output [3:0]            vga_blue_o,
 
   // Status outputs
   output [14:0]           status_o,
@@ -214,6 +222,7 @@ module board_top #(
     .ADDR_WIDTH    (ADDR_WIDTH),
     .L2_DATA_W     (L2_DATA_W),
     .USE_MIG       (USE_MIG),
+    .USE_VGA       (1),
     .UART_BOOT_EN  (UART_BOOT_EN),
     .UART_BAUD     (UART_BAUD),
     .UART_CLK_HZ   (UART_CLK_HZ),
@@ -223,7 +232,7 @@ module board_top #(
   ) u_core (
     .clk          (aux_clk_100),
     .rst_n        (rst_n_int),
-    .launcher_reset_req_i (1'b0),
+    .launcher_reset_req_i (launcher_btn_i),
     .uart_rx_i    (uart_rx_i),
     .uart_tx_o    (uart_tx_o),
 
@@ -322,7 +331,12 @@ module board_top #(
     .boot_memtest0_ok_o (boot_memtest0_ok),
     .boot_memtest1_ok_o (boot_memtest1_ok),
     .boot_memtest2_ok_o (boot_memtest2_ok),
-    .boot_memtest3_ok_o (boot_memtest3_ok)
+    .boot_memtest3_ok_o (boot_memtest3_ok),
+    .vga_hsync_o     (vga_hsync_o),
+    .vga_vsync_o     (vga_vsync_o),
+    .vga_red_o       (vga_red_o),
+    .vga_green_o     (vga_green_o),
+    .vga_blue_o      (vga_blue_o)
   );
 
   // Status (diagnostic):
@@ -404,3 +418,4 @@ module board_top #(
                                           : (boot_sync_seen ? boot_word3_ok : boot_memtest3_ok);
 
 endmodule
+

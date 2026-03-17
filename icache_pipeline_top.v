@@ -16,6 +16,7 @@ module icache_pipeline_top #(
   parameter integer L2_DATA_W   = 64,
   parameter integer DMEM_WORDS  = 1024,
   parameter integer USE_MIG     = 0,
+  parameter integer USE_VGA     = 0,
   parameter integer UART_BOOT_EN = 0,
   parameter integer UART_BAUD    = 115_200,
   parameter integer UART_CLK_HZ  = 100_000_000,
@@ -25,6 +26,7 @@ module icache_pipeline_top #(
 ) (
   input                   clk,
   input                   rst_n,
+  input                   launcher_reset_req_i,
   input                   uart_rx_i,
   output                  uart_tx_o,
 
@@ -129,12 +131,18 @@ module icache_pipeline_top #(
   output                  boot_memtest0_ok_o,
   output                  boot_memtest1_ok_o,
   output                  boot_memtest2_ok_o,
-  output                  boot_memtest3_ok_o
+  output                  boot_memtest3_ok_o,
+  output                  vga_hsync_o,
+  output                  vga_vsync_o,
+  output [3:0]            vga_red_o,
+  output [3:0]            vga_green_o,
+  output [3:0]            vga_blue_o
 );
 
   // ---------------- Clock/Reset selection ----------------
   wire core_clk;
   wire core_rst_n;
+  wire core_rst_n_base;
   wire core_rst;
 
   wire ui_clk;
@@ -167,6 +175,27 @@ module icache_pipeline_top #(
   reg         wb_seen_q;
   reg [BOOT_RELEASE_W-1:0] boot_release_cnt_q;
   reg         boot_release_ok_q;
+  localparam integer LAUNCHER_BTN_DEBOUNCE_CYCLES = 50_000;
+  localparam integer LAUNCHER_BTN_DEBOUNCE_W =
+      (LAUNCHER_BTN_DEBOUNCE_CYCLES <= 1) ? 1 : $clog2(LAUNCHER_BTN_DEBOUNCE_CYCLES + 1);
+  // Larger games such as Gomoku/Pacman/Chess can still have framebuffer/MMIO
+  // traffic in flight when software requests a launcher return. Give that work
+  // time to drain before asserting reset; otherwise the reset can land in the
+  // middle of active video writes and leave the system visually hung.
+  localparam integer LAUNCHER_RESET_ARM_CYCLES = 5_000_000;
+  localparam integer LAUNCHER_RESET_ARM_W =
+      (LAUNCHER_RESET_ARM_CYCLES <= 1) ? 1 : $clog2(LAUNCHER_RESET_ARM_CYCLES + 1);
+  localparam integer LAUNCHER_RESET_CYCLES = 2_000_000;
+  localparam integer LAUNCHER_RESET_W =
+      (LAUNCHER_RESET_CYCLES <= 1) ? 1 : $clog2(LAUNCHER_RESET_CYCLES + 1);
+  (* ASYNC_REG = "TRUE" *) reg launcher_reset_ff1_q;
+  (* ASYNC_REG = "TRUE" *) reg launcher_reset_ff2_q;
+  reg         launcher_reset_btn_q;
+  reg         launcher_reset_pending_q;
+  reg         launcher_reset_active_q;
+  reg [LAUNCHER_BTN_DEBOUNCE_W-1:0] launcher_reset_db_cnt_q;
+  reg [LAUNCHER_RESET_ARM_W-1:0] launcher_reset_arm_cnt_q;
+  reg [LAUNCHER_RESET_W-1:0] launcher_reset_cnt_q;
   wire        boot_word0_ok_int;
   wire        boot_word1_ok_int;
   wire        boot_word2_ok_int;
@@ -193,7 +222,13 @@ module icache_pipeline_top #(
   wire        boot_memtest1_ok_int;
   wire        boot_memtest2_ok_int;
   wire        boot_memtest3_ok_int;
+  wire        vga_hsync_w;
+  wire        vga_vsync_w;
+  wire [3:0]  vga_red_w;
+  wire [3:0]  vga_green_w;
+  wire [3:0]  vga_blue_w;
 
+  assign core_rst_n = core_rst_n_base & ~launcher_reset_active_q;
   assign core_rst = ~core_rst_n;
   assign boot_edge_seen_int = boot_edge_seen_boot_int | boot_ui_edge_seen_q;
   assign boot_ui_reset_released_w = ~ui_clk_sync_rst & init_calib_complete;
@@ -348,8 +383,8 @@ module icache_pipeline_top #(
       );
 
       // Core clock/reset from MIG UI
-      assign core_clk   = ui_clk;
-      assign core_rst_n = rst_n & ~ui_clk_sync_rst & init_calib_complete & boot_release_ok_q;
+      assign core_clk      = ui_clk;
+      assign core_rst_n_base = rst_n & ~ui_clk_sync_rst & init_calib_complete & boot_release_ok_q;
 
       // L2 + arbitration
       l2_cache_top u_l2 (
@@ -544,8 +579,8 @@ module icache_pipeline_top #(
       assign ui_clk = clk;
       assign ui_clk_sync_rst = 1'b0;
 
-            assign core_clk            = clk;
-      assign core_rst_n          = rst_n;
+      assign core_clk            = clk;
+      assign core_rst_n_base     = rst_n;
       assign boot_done_int       = 1'b1;
       assign boot_edge_seen_boot_int = 1'b0;
       assign boot_rx_seen_int    = 1'b0;
@@ -592,6 +627,74 @@ module icache_pipeline_top #(
       assign d_l2_rsp_err_int   = d_l2_rsp_err;
     end
   endgenerate
+
+  always @(posedge core_clk or negedge core_rst_n_base) begin
+    if (!core_rst_n_base) begin
+      launcher_reset_ff1_q <= 1'b0;
+      launcher_reset_ff2_q <= 1'b0;
+      launcher_reset_btn_q <= 1'b0;
+      launcher_reset_pending_q <= 1'b0;
+      launcher_reset_active_q <= 1'b0;
+      launcher_reset_db_cnt_q <= {LAUNCHER_BTN_DEBOUNCE_W{1'b0}};
+      launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+      launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+    end else begin
+      launcher_reset_ff1_q <= launcher_reset_req_i;
+      launcher_reset_ff2_q <= launcher_reset_ff1_q;
+
+      if (launcher_reset_ff2_q == launcher_reset_btn_q) begin
+        launcher_reset_db_cnt_q <= {LAUNCHER_BTN_DEBOUNCE_W{1'b0}};
+      end else if (LAUNCHER_BTN_DEBOUNCE_CYCLES <= 1) begin
+        launcher_reset_btn_q <= launcher_reset_ff2_q;
+        launcher_reset_db_cnt_q <= {LAUNCHER_BTN_DEBOUNCE_W{1'b0}};
+      end else if (launcher_reset_db_cnt_q == LAUNCHER_BTN_DEBOUNCE_CYCLES - 1) begin
+        launcher_reset_btn_q <= launcher_reset_ff2_q;
+        launcher_reset_db_cnt_q <= {LAUNCHER_BTN_DEBOUNCE_W{1'b0}};
+      end else begin
+        launcher_reset_db_cnt_q <= launcher_reset_db_cnt_q + 1'b1;
+      end
+
+      if (!boot_done_int) begin
+        launcher_reset_pending_q <= 1'b0;
+        launcher_reset_active_q <= 1'b0;
+        launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+        launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+      end else if (launcher_reset_active_q) begin
+        if (LAUNCHER_RESET_CYCLES <= 1) begin
+          launcher_reset_active_q <= 1'b0;
+          launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+        end else if (launcher_reset_cnt_q == LAUNCHER_RESET_CYCLES - 1) begin
+          launcher_reset_active_q <= 1'b0;
+          launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+        end else begin
+          launcher_reset_cnt_q <= launcher_reset_cnt_q + 1'b1;
+        end
+      end else if (launcher_reset_pending_q) begin
+        if (LAUNCHER_RESET_ARM_CYCLES <= 1) begin
+          launcher_reset_pending_q <= 1'b0;
+          launcher_reset_active_q <= 1'b1;
+          launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+          launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+        end else if (launcher_reset_arm_cnt_q == LAUNCHER_RESET_ARM_CYCLES - 1) begin
+          launcher_reset_pending_q <= 1'b0;
+          launcher_reset_active_q <= 1'b1;
+          launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+          launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+        end else begin
+          launcher_reset_arm_cnt_q <= launcher_reset_arm_cnt_q + 1'b1;
+          launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+        end
+      end else if (uart_mmio_launcher_reset_fire) begin
+        launcher_reset_pending_q <= 1'b1;
+        launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+        launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+      end else begin
+        launcher_reset_pending_q <= 1'b0;
+        launcher_reset_arm_cnt_q <= {LAUNCHER_RESET_ARM_W{1'b0}};
+        launcher_reset_cnt_q <= {LAUNCHER_RESET_W{1'b0}};
+      end
+    end
+  end
 
   assign boot_done_o = boot_done_int;
   assign boot_edge_seen_o = boot_edge_seen_int;
@@ -641,6 +744,11 @@ module icache_pipeline_top #(
   assign boot_memtest1_ok_o = boot_memtest1_ok_int;
   assign boot_memtest2_ok_o = boot_memtest2_ok_int;
   assign boot_memtest3_ok_o = boot_memtest3_ok_int;
+  assign vga_hsync_o = vga_hsync_w;
+  assign vga_vsync_o = vga_vsync_w;
+  assign vga_red_o   = vga_red_w;
+  assign vga_green_o = vga_green_w;
+  assign vga_blue_o  = vga_blue_w;
 
   // ================= IF =================
   wire [31:0] if_pc;
@@ -1107,11 +1215,17 @@ module icache_pipeline_top #(
   //   0x4000_0004 read  -> TX status, bit0 = tx_ready
   //   0x4000_0008 read  -> RX data, low byte = received char, read pops one byte
   //   0x4000_000C read  -> RX status, bit0 = rx_valid, bit1 = rx_overrun
+  //   0x4000_0010 read  -> launcher button status, bit0 = pressed
+  //   0x4000_0014 write -> launcher soft reset request, bit0 = trigger
   // Other addresses in the region return an error response.
   localparam [31:0] UART_MMIO_BASE   = 32'h4000_0000;
   localparam [31:0] UART_MMIO_TX_STATUS = 32'h4000_0004;
   localparam [31:0] UART_MMIO_RX_DATA   = 32'h4000_0008;
   localparam [31:0] UART_MMIO_RX_STATUS = 32'h4000_000C;
+  localparam [31:0] UART_MMIO_LAUNCHER_STATUS = 32'h4000_0010;
+  localparam [31:0] UART_MMIO_LAUNCHER_RESET  = 32'h4000_0014;
+  localparam [31:0] VGA_MMIO_BASE    = 32'h5000_0000;
+  localparam [31:0] VGA_MMIO_LAST    = 32'h5000_7FFF;
 
   wire        uart_mmio_hit = (dmem_addr_o[31:16] == UART_MMIO_BASE[31:16]);
   wire        uart_mmio_sel_tx_data =
@@ -1122,12 +1236,24 @@ module icache_pipeline_top #(
       (dmem_addr_o[31:2] == UART_MMIO_RX_DATA[31:2]);
   wire        uart_mmio_sel_rx_status =
       (dmem_addr_o[31:2] == UART_MMIO_RX_STATUS[31:2]);
+  wire        uart_mmio_sel_launcher_status =
+      (dmem_addr_o[31:2] == UART_MMIO_LAUNCHER_STATUS[31:2]);
+  wire        uart_mmio_sel_launcher_reset =
+      (dmem_addr_o[31:2] == UART_MMIO_LAUNCHER_RESET[31:2]);
   wire        uart_mmio_addr_valid =
       uart_mmio_sel_tx_data |
       uart_mmio_sel_tx_status |
       uart_mmio_sel_rx_data |
-      uart_mmio_sel_rx_status;
+      uart_mmio_sel_rx_status |
+      uart_mmio_sel_launcher_status |
+      uart_mmio_sel_launcher_reset;
   wire        uart_mmio_req_valid = dmem_req_o & uart_mmio_hit;
+  wire        vga_mmio_hit =
+      (USE_VGA != 0) &&
+      (dmem_addr_o >= VGA_MMIO_BASE) &&
+      (dmem_addr_o <= VGA_MMIO_LAST);
+  wire        vga_mmio_req_valid = dmem_req_o & vga_mmio_hit;
+  wire        local_mmio_hit = uart_mmio_hit | vga_mmio_hit;
 
   wire [7:0] uart_mmio_wbyte =
       dmem_wstrb_o[0] ? dmem_wdata_o[7:0]   :
@@ -1153,7 +1279,7 @@ module icache_pipeline_top #(
       1'b1;
   wire uart_mmio_fire = uart_mmio_req_valid & uart_mmio_ready;
   wire uart_mmio_write_err =
-      dmem_we_o & (~uart_mmio_sel_tx_data | ~uart_mmio_has_byte);
+      dmem_we_o & (~(uart_mmio_sel_tx_data | uart_mmio_sel_launcher_reset) | ~uart_mmio_has_byte);
   wire uart_mmio_read_err =
       (~dmem_we_o) & (~uart_mmio_addr_valid);
   wire uart_mmio_rsp_err = uart_mmio_fire & (uart_mmio_write_err | uart_mmio_read_err);
@@ -1161,14 +1287,57 @@ module icache_pipeline_top #(
       uart_mmio_sel_tx_status ? {31'd0, ~uart_tx_busy} :
       uart_mmio_sel_rx_data   ? {24'd0, uart_rx_data_q} :
       uart_mmio_sel_rx_status ? {30'd0, uart_rx_overrun_q, uart_rx_valid_q} :
+      uart_mmio_sel_launcher_status ? {31'd0, launcher_reset_btn_q} :
       32'd0;
   wire uart_mmio_rsp_valid = uart_mmio_fire;
   wire uart_mmio_tx_fire =
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_tx_data & uart_mmio_has_byte;
+  wire uart_mmio_launcher_reset_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_launcher_reset & uart_mmio_has_byte & uart_mmio_wbyte[0];
   wire uart_mmio_rx_pop =
       uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_data;
   wire uart_mmio_rx_status_read =
       uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_status;
+  wire        vga_mmio_ready;
+  wire        vga_mmio_rsp_valid;
+  wire [31:0] vga_mmio_rsp_rdata;
+  wire        vga_mmio_rsp_err;
+
+  generate
+    if (USE_VGA) begin : GEN_VGA
+      vga_subsystem #(
+        .FB_BASE_ADDR (VGA_MMIO_BASE)
+      ) u_vga (
+        .cpu_clk       (core_clk),
+        .rst_n         (core_rst_n),
+        .vga_mclk      (clk),
+        .cpu_req_valid (vga_mmio_req_valid),
+        .cpu_req_we    (dmem_we_o),
+        .cpu_req_addr  (dmem_addr_o),
+        .cpu_req_wdata (dmem_wdata_o),
+        .cpu_req_wstrb (dmem_wstrb_o),
+        .cpu_req_ready (vga_mmio_ready),
+        .cpu_rsp_valid (vga_mmio_rsp_valid),
+        .cpu_rsp_rdata (vga_mmio_rsp_rdata),
+        .cpu_rsp_err   (vga_mmio_rsp_err),
+        .hsync_o       (vga_hsync_w),
+        .vsync_o       (vga_vsync_w),
+        .red_o         (vga_red_w),
+        .green_o       (vga_green_w),
+        .blue_o        (vga_blue_w)
+      );
+    end else begin : GEN_NO_VGA
+      assign vga_mmio_ready = 1'b0;
+      assign vga_mmio_rsp_valid = 1'b0;
+      assign vga_mmio_rsp_rdata = 32'd0;
+      assign vga_mmio_rsp_err = 1'b0;
+      assign vga_hsync_w = 1'b1;
+      assign vga_vsync_w = 1'b1;
+      assign vga_red_w = 4'd0;
+      assign vga_green_w = 4'd0;
+      assign vga_blue_w = 4'd0;
+    end
+  endgenerate
 
   always @(posedge core_clk or negedge core_rst_n) begin
     if (!core_rst_n) begin
@@ -1188,9 +1357,9 @@ module icache_pipeline_top #(
       if_pc_prev_q <= if_pc;
       if (dmem_req_o)
         dmem_req_seen_q <= 1'b1;
-      if (dmem_req_o && dmem_we_o && ~uart_mmio_hit)
+      if (dmem_req_o && dmem_we_o && ~local_mmio_hit)
         dmem_store_seen_q <= 1'b1;
-      if (dmem_rvalid_i && ~uart_mmio_hit)
+      if (dmem_rvalid_i && ~local_mmio_hit)
         dmem_rsp_seen_q <= 1'b1;
       if (mem_stall)
         mem_stall_seen_q <= 1'b1;
@@ -1267,7 +1436,7 @@ module icache_pipeline_top #(
   wire        dcache_cpu_rsp_err;
   wire        dcache_cpu_rsp_ready = 1'b1;
   wire [1:0]  dcache_req_size = mem_size[1:0];
-  wire        dcache_cpu_req_valid = dmem_req_o & ~uart_mmio_hit;
+  wire        dcache_cpu_req_valid = dmem_req_o & ~local_mmio_hit;
 `ifdef FAST_SIM
   localparam integer D_CACHE_BYTES_CFG = 8192;   // fast simulation
 `elsif FAST_SYNTH
@@ -1314,10 +1483,14 @@ module icache_pipeline_top #(
     .l2_rsp_err      (d_l2_rsp_err_int)
   );
 
-  assign dmem_ready_i  = uart_mmio_hit ? uart_mmio_ready     : dcache_cpu_req_ready;
-  assign dmem_rvalid_i = uart_mmio_hit ? uart_mmio_rsp_valid : dcache_cpu_rsp_valid;
-  assign dmem_rdata_i  = uart_mmio_hit ? uart_mmio_rsp_rdata : dcache_cpu_rsp_rdata;
-  assign dmem_rsp_err_i = uart_mmio_hit ? uart_mmio_rsp_err  : dcache_cpu_rsp_err;
+  assign dmem_ready_i  = uart_mmio_hit ? uart_mmio_ready :
+                         (vga_mmio_hit ? vga_mmio_ready : dcache_cpu_req_ready);
+  assign dmem_rvalid_i = uart_mmio_hit ? uart_mmio_rsp_valid :
+                         (vga_mmio_hit ? vga_mmio_rsp_valid : dcache_cpu_rsp_valid);
+  assign dmem_rdata_i  = uart_mmio_hit ? uart_mmio_rsp_rdata :
+                         (vga_mmio_hit ? vga_mmio_rsp_rdata : dcache_cpu_rsp_rdata);
+  assign dmem_rsp_err_i = uart_mmio_hit ? uart_mmio_rsp_err :
+                          (vga_mmio_hit ? vga_mmio_rsp_err : dcache_cpu_rsp_err);
   assign store_done_i  = dmem_rvalid_i;
   wire        mem_err_event = dmem_rvalid_i & dmem_rsp_err_i;
 
