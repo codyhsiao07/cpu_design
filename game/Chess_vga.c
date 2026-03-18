@@ -182,6 +182,7 @@ static int last_from_y = -1;
 static int last_to_x = -1;
 static int last_to_y = -1;
 static unsigned int rng_state = 0x3A71C52Du;
+static int launcher_exit_pending = 0;
 
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
 static __attribute__((noreturn)) void launcher_button_return(void)
@@ -194,13 +195,15 @@ static __attribute__((noreturn)) void launcher_button_return(void)
     launcher_jump_to_menu_soft_reset();
 #else
     ui_launcher_request_menu();
+    for (;;) {
+    }
 #endif
 }
 
 static void launcher_abort_if_requested(void)
 {
     if (ui_launcher_menu_requested()) {
-        launcher_button_return();
+        launcher_exit_pending = 1;
     }
 }
 #endif
@@ -789,10 +792,19 @@ static unsigned int generate_legal_moves_for(const chess_state_t *state, chess_m
     unsigned int count = 0u;
     int side = state->side_to_move;
 
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    if (launcher_exit_pending) {
+        return 0u;
+    }
+#endif
+
     for (y = 0; y < BOARD_SIZE; y++) {
         int x;
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
         launcher_abort_if_requested();
+        if (launcher_exit_pending) {
+            return 0u;
+        }
 #endif
         for (x = 0; x < BOARD_SIZE; x++) {
             unsigned char piece = state->board[y][x];
@@ -1018,10 +1030,18 @@ static int evaluate_position(const chess_state_t *state)
 static int search_position(const chess_state_t *state, unsigned int depth, int alpha, int beta)
 {
     chess_move_t moves[MOVE_MAX];
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    if (launcher_exit_pending) {
+        return 0;
+    }
+#endif
     unsigned int count = generate_legal_moves_for(state, moves);
 
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
     launcher_abort_if_requested();
+    if (launcher_exit_pending) {
+        return 0;
+    }
 #endif
 
     if (count == 0u) {
@@ -1047,6 +1067,9 @@ static int search_position(const chess_state_t *state, unsigned int depth, int a
             int score;
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
             launcher_abort_if_requested();
+            if (launcher_exit_pending) {
+                return 0;
+            }
 #endif
             apply_move(&next, &moves[i]);
             score = search_position(&next, depth - 1u, alpha, beta);
@@ -1071,6 +1094,9 @@ static int search_position(const chess_state_t *state, unsigned int depth, int a
             int score;
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
             launcher_abort_if_requested();
+            if (launcher_exit_pending) {
+                return 0;
+            }
 #endif
             apply_move(&next, &moves[i]);
             score = search_position(&next, depth - 1u, alpha, beta);
@@ -1095,6 +1121,12 @@ static chess_move_t choose_ai_move(void)
     unsigned int depth = (game_mode == MODE_AI_STRONG) ? AI_STRONG_DEPTH : AI_MED_DEPTH;
     unsigned int i;
 
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    if (launcher_exit_pending) {
+        return best_move;
+    }
+#endif
+
     if (game_mode == MODE_AI_STRONG && legal_move_count > 12u) {
         depth = 1u;
     }
@@ -1104,6 +1136,9 @@ static chess_move_t choose_ai_move(void)
         int score;
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
         launcher_abort_if_requested();
+        if (launcher_exit_pending) {
+            return best_move;
+        }
 #endif
         apply_move(&next, &legal_moves[i]);
         if (game_mode == MODE_AI_MED) {
@@ -1127,6 +1162,11 @@ static chess_move_t choose_ai_move(void)
 static void refresh_turn_state(void)
 {
     legal_move_count = generate_legal_moves_for(&game_state, legal_moves);
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    if (launcher_exit_pending) {
+        return;
+    }
+#endif
     if (legal_move_count == 0u) {
         if (is_square_attacked(&game_state, game_state.king_x[game_state.side_to_move],
                                game_state.king_y[game_state.side_to_move], game_state.side_to_move ^ 1)) {
@@ -1207,6 +1247,9 @@ static void reset_position(void)
 
 static void begin_game(int next_mode)
 {
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    launcher_exit_pending = 0;
+#endif
     game_mode = next_mode;
     view_mode = VIEW_GAME;
     reset_position();
@@ -1298,6 +1341,11 @@ static void do_ai_move(void)
     note_code = NOTE_AI;
     need_redraw = 1;
     move = choose_ai_move();
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    if (launcher_exit_pending) {
+        return;
+    }
+#endif
     commit_move(&move);
 }
 
@@ -1729,12 +1777,15 @@ int main(void)
     menu_selection = 0;
     need_redraw = 1;
     scene_valid = 0;
+#if defined(LAUNCHER_SOFT_MENU_BUTTON)
+    launcher_exit_pending = 0;
+#endif
 
     while (running) {
         int ch;
 
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
-        if (ui_launcher_menu_requested()) {
+        if (launcher_exit_pending || ui_launcher_menu_requested()) {
             launcher_button_return();
         }
 #endif

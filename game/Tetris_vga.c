@@ -368,11 +368,8 @@ static void draw_uint_fixed(unsigned int x, unsigned int y, unsigned int digits,
 
     for (i = 0u; i < digits; i++) {
         place = pow10_table[digits - 1u - i];
-        digit = 0u;
-        while (value >= place && digit < 9u) {
-            value -= place;
-            digit++;
-        }
+        digit = value / place;
+        value %= place;
         buf[i] = (char)('0' + digit);
     }
     buf[digits] = '\0';

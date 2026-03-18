@@ -394,27 +394,24 @@ static void draw_text_centered(unsigned int x, unsigned int y, unsigned int w,
 
 static void draw_uint(unsigned int x, unsigned int y, unsigned int scale, unsigned int value, unsigned char color)
 {
-    static const unsigned int div_table[10] = {
-        1000000000u, 100000000u, 10000000u, 1000000u, 100000u,
-        10000u, 1000u, 100u, 10u, 1u
-    };
     char buf[11];
+    unsigned int len = 0u;
     unsigned int i;
-    unsigned int index = 0u;
-    int started = 0;
 
-    for (i = 0u; i < 10u; i++) {
-        unsigned int digit = 0u;
-        while (value >= div_table[i]) {
-            value -= div_table[i];
-            digit++;
+    if (value == 0u) {
+        buf[len++] = '0';
+    } else {
+        while (value != 0u) {
+            buf[len++] = (char)('0' + (value % 10u));
+            value /= 10u;
         }
-        if (digit != 0u || started || i == 9u) {
-            buf[index++] = (char)('0' + digit);
-            started = 1;
+        for (i = 0u; i < (len >> 1); i++) {
+            char tmp = buf[i];
+            buf[i] = buf[len - 1u - i];
+            buf[len - 1u - i] = tmp;
         }
     }
-    buf[index] = '\0';
+    buf[len] = '\0';
     draw_text(x, y, buf, scale, color);
 }
 

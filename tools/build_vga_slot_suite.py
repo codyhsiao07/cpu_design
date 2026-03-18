@@ -8,6 +8,11 @@ from pathlib import Path
 BASE_ADDR = 0x80000000
 MENU_REGION_LENGTH = 0x00080000
 GAME_REGION_LENGTH = 0x00020000
+ARCH = "rv32im"
+IMAGE_ARCH_OVERRIDES = {
+    "menu": "rv32i",
+    "chess": "rv32i",
+}
 
 IMAGES = [
     ("menu", 0x80000000, MENU_REGION_LENGTH, "tools/crt0.S", None,
@@ -137,7 +142,7 @@ def main() -> None:
     combined_end = 0
 
     common_flags = [
-        "-march=rv32i",
+        f"-march={ARCH}",
         "-mabi=ilp32",
         "-ffreestanding",
         "-nostdlib",
@@ -147,7 +152,7 @@ def main() -> None:
         "-DGAME_USE_UART",
     ]
     link_flags = [
-        "-march=rv32i",
+        f"-march={ARCH}",
         "-mabi=ilp32",
         "-nostdlib",
     ]
@@ -164,12 +169,31 @@ def main() -> None:
 
         write_linker_script(ld_path, origin, length)
 
-        image_flags = list(common_flags)
+        image_arch = IMAGE_ARCH_OVERRIDES.get(name, ARCH)
+        image_flags = [
+            f"-march={image_arch}",
+            "-mabi=ilp32",
+            "-ffreestanding",
+            "-nostdlib",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-DGAME_USE_UART",
+        ]
+        image_link_flags = [
+            f"-march={image_arch}",
+            "-mabi=ilp32",
+            "-nostdlib",
+        ]
+        image_link_libs = []
+        if image_arch != ARCH:
+            image_link_libs.append("-lgcc")
+
         if policy is not None:
             image_flags.append(f"-DLAUNCHER_INPUT_POLICY={policy}")
         if name != "menu":
             image_flags.append("-DLAUNCHER_SOFT_MENU_BUTTON=1")
-        if name in {"gomoku", "pacman", "chess"}:
+        if name in {"gomoku"}:
             image_flags.append("-DLAUNCHER_DIRECT_MENU_JUMP=1")
         if name != "menu" and menu_return_addr is not None:
             image_flags.append(f"-DLAUNCHER_MENU_RETURN_ADDR=0x{menu_return_addr:08X}")
@@ -201,13 +225,14 @@ def main() -> None:
 
         run([
             args.gcc,
-            *link_flags,
+            *image_link_flags,
             f"-Wl,-T,{ld_path}",
             f"-Wl,-Map,{map_path}",
             "-o",
             str(elf_path),
             str(crt0_obj),
             *[str(path) for path in obj_paths],
+            *image_link_libs,
         ], repo)
 
         if name == "menu":

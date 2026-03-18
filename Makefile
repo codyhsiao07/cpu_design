@@ -1,4 +1,4 @@
-# Build a single C bare-metal RV32I program into ELF/BIN/MEM for this repo.
+# Build a single C bare-metal RV32IM program into ELF/BIN/MEM for this repo.
 # Usage:
 #   make
 #   make SRC=OS/my_os.c OUT_NAME=my_os MEM_OUT=TEST_FILES/mem_my_os.mem
@@ -31,8 +31,9 @@ GAMES_MENU_EXTRA_SRCS := $(GAME_DIR)/games_shared_ui.c $(GAME_DIR)/game_tictacto
 TETRIS_VGA_EXTRA_SRCS := $(GAME_DIR)/games_shared_ui.c $(GAME_DIR)/vga_fb.c
 
 APP_DEFINES ?= -DGAME_USE_UART
-CFLAGS  ?= -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -O2 -Wall -Wextra $(APP_DEFINES)
-LDFLAGS ?= -march=rv32i -mabi=ilp32 -nostdlib -Wl,-T,$(LDSCRIPT) -Wl,-Map,$(BUILD_DIR)/$(OUT_NAME).map
+ARCH    ?= rv32im
+CFLAGS  ?= -march=$(ARCH) -mabi=ilp32 -ffreestanding -nostdlib -O2 -Wall -Wextra $(APP_DEFINES)
+LDFLAGS ?= -march=$(ARCH) -mabi=ilp32 -nostdlib -Wl,-T,$(LDSCRIPT) -Wl,-Map,$(BUILD_DIR)/$(OUT_NAME).map
 
 SRC_BASE := $(notdir $(basename $(SRC)))
 CRT0_OBJ := $(BUILD_DIR)/crt0.o
@@ -98,6 +99,7 @@ print-config:
 	@echo "OUT_NAME=$(OUT_NAME)"
 	@echo "MEM_OUT=$(MEM_OUT)"
 	@echo "APP_DEFINES=$(APP_DEFINES)"
+	@echo "ARCH=$(ARCH)"
 	@echo "CC_PREFIX=$(CC_PREFIX)"
 	@echo "BINUTILS_PREFIX=$(BINUTILS_PREFIX)"
 	@echo "SIM_EXE=$(SIM_EXE)"

@@ -49,7 +49,7 @@ $elf = Join-Path $BuildDir ("{0}.elf" -f $stem)
 $bin = Join-Path $BuildDir ("{0}.bin" -f $stem)
 
 $gccArgs = @(
-  "-march=rv32i",
+  "-march=rv32im",
   "-mabi=ilp32",
   "-ffreestanding",
   "-nostdlib",

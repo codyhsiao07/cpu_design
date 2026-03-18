@@ -152,23 +152,22 @@ static void io_puts(const char *text)
 
 static void io_put_uint(unsigned int value)
 {
-    static const unsigned int div_table[10] = {
-        1000000000u, 100000000u, 10000000u, 1000000u, 100000u,
-        10000u, 1000u, 100u, 10u, 1u
-    };
+    char buf[11];
+    unsigned int len = 0u;
     unsigned int i;
-    int started = 0;
 
-    for (i = 0u; i < 10u; i++) {
-        unsigned int digit = 0u;
-        while (value >= div_table[i]) {
-            value -= div_table[i];
-            digit++;
-        }
-        if (digit != 0u || started || i == 9u) {
-            io_putc((char)('0' + digit));
-            started = 1;
-        }
+    if (value == 0u) {
+        io_putc('0');
+        return;
+    }
+
+    while (value != 0u) {
+        buf[len++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    }
+
+    for (i = len; i > 0u; i--) {
+        io_putc(buf[i - 1u]);
     }
 }
 

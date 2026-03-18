@@ -110,7 +110,7 @@ module id_stage (
   localparam [6:0] OP_OP     = 7'b0110011;
   localparam [6:0] OP_SYSTEM = 7'b1110011; // (ecall/ebreak/csrr*)
 
-  // -------- ALU op encoding (3-bit) --------
+  // -------- ALU op encoding (4-bit) --------
   localparam [3:0] ALU_ADD = 4'b0000;
   localparam [3:0] ALU_SUB = 4'b0001;
   localparam [3:0] ALU_SLT = 4'b0010;

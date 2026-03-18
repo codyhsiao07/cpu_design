@@ -1,4 +1,4 @@
-// ex_stage.v -- RV32I EX stage (no MUL/DIV)
+// ex_stage.v -- RV32I/RV32M EX stage
 // Verilog-2001; matches the ID/EX register control bundle (a few control bits).
 // ALU op is 3-bit as defined by id_stage:
 // 000 ADD, 001 SUB, 010 SLT, 011 SLTU, 100 XOR, 101 OR, 110 AND, 111 SHIFT
@@ -67,10 +67,22 @@ module ex_stage (
                    ALU_REM   = 4'b1110,
                    ALU_REMU  = 4'b1111; // SHIFT: SLL/SRL/SRA depends on flags
   
-  wire is_mul  = (ex_alu_op_i == ALU_MUL);
-
-  wire is_div  = (ex_alu_op_i == ALU_DIV);
-  wire is_rem  = (ex_alu_op_i == ALU_REM);
+  wire is_mul   = (ex_alu_op_i == ALU_MUL)   ||
+                  (ex_alu_op_i == ALU_MULH)  ||
+                  (ex_alu_op_i == ALU_MULHSU)||
+                  (ex_alu_op_i == ALU_MULHU);
+  wire is_div   = (ex_alu_op_i == ALU_DIV)   ||
+                  (ex_alu_op_i == ALU_DIVU);
+  wire is_rem   = (ex_alu_op_i == ALU_REM)   ||
+                  (ex_alu_op_i == ALU_REMU);
+  wire mul_high = (ex_alu_op_i != ALU_MUL);
+  wire mul_signed_a = (ex_alu_op_i == ALU_MUL)   ||
+                      (ex_alu_op_i == ALU_MULH)  ||
+                      (ex_alu_op_i == ALU_MULHSU);
+  wire mul_signed_b = (ex_alu_op_i == ALU_MUL) ||
+                      (ex_alu_op_i == ALU_MULH);
+  wire div_signed = (ex_alu_op_i == ALU_DIV) ||
+                    (ex_alu_op_i == ALU_REM);
   
   wire        mul_start;
   wire        mul_busy;
@@ -84,6 +96,9 @@ module ex_stage (
     .start_i  (mul_start),
     .a_i      (srcA),
     .b_i      (srcB),
+    .signed_a_i(mul_signed_a),
+    .signed_b_i(mul_signed_b),
+    .high_half_i(mul_high),
     .busy_o   (mul_busy),
     .done_o   (mul_done),
     .result_o (mul_result)
@@ -113,6 +128,7 @@ module ex_stage (
     .start_i     (div_start),
     .dividend_i  (srcA),
     .divisor_i   (srcB),
+    .signed_mode_i(div_signed),
     .busy_o      (div_busy),
     .done_o      (div_done),
     .quotient_o  (div_quotient),
@@ -132,7 +148,7 @@ module ex_stage (
   
   assign mul_start = ex_valid_i && is_mul && !mul_started && !mul_busy;
   assign div_start = ex_valid_i && (is_div || is_rem) && !div_started && !div_busy;
-  assign ex_stall_o = ex_valid_i && ( (is_mul && !mul_done) || ((is_div || is_rem) && !div_done) );
+  assign ex_stall_o = ex_valid_i && ((is_mul && !mul_done) || ((is_div || is_rem) && !div_done));
   
   reg [31:0] alu_res;
   reg [31:0] ex_result_r;

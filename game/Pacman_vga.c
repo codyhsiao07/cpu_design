@@ -183,6 +183,8 @@ static __attribute__((noreturn)) void launcher_button_return(void)
     launcher_jump_to_menu_soft_reset();
 #else
     ui_launcher_request_menu();
+    for (;;) {
+    }
 #endif
 }
 #endif
@@ -400,24 +402,21 @@ static void draw_text_centered(unsigned int x, unsigned int y, unsigned int w,
 static void draw_uint(unsigned int x, unsigned int y, unsigned int scale,
                       unsigned int value, unsigned char color)
 {
-    static const unsigned int div_table[10] = {
-        1000000000u, 100000000u, 10000000u, 1000000u, 100000u,
-        10000u, 1000u, 100u, 10u, 1u
-    };
     char buffer[11];
-    unsigned int i;
     unsigned int out = 0u;
-    int started = 0;
+    unsigned int i;
 
-    for (i = 0u; i < 10u; i++) {
-        unsigned int digit = 0u;
-        while (value >= div_table[i]) {
-            value -= div_table[i];
-            digit++;
+    if (value == 0u) {
+        buffer[out++] = '0';
+    } else {
+        while (value != 0u) {
+            buffer[out++] = (char)('0' + (value % 10u));
+            value /= 10u;
         }
-        if (digit != 0u || started || i == 9u) {
-            buffer[out++] = (char)('0' + digit);
-            started = 1;
+        for (i = 0u; i < (out >> 1); i++) {
+            char tmp = buffer[i];
+            buffer[i] = buffer[out - 1u - i];
+            buffer[out - 1u - i] = tmp;
         }
     }
     buffer[out] = '\0';
@@ -434,17 +433,10 @@ static unsigned int random_next(void)
 
 static unsigned int random_small(unsigned int limit)
 {
-    unsigned int value;
-
     if (limit <= 1u) {
         return 0u;
     }
-
-    value = random_next() & 3u;
-    while (value >= limit) {
-        value = (value + 1u) & 3u;
-    }
-    return value;
+    return random_next() % limit;
 }
 
 static int abs_int(int value)
