@@ -8,6 +8,8 @@
 - 板級整合：`board_top.v`
 - 內部時鐘橋接：`clock_bridge.v`
 
+目前也已加入 FreeRTOS bring-up 與 VGA demo，可在板上展示 task scheduling、timer tick、context switch、queue IPC 與 VGA MMIO 更新。
+
 ## 1. 目前主線架構
 
 主要維護與驗證路徑：
@@ -28,6 +30,12 @@
   - `0x4000_0004`：UART TX status
   - `0x4000_0008`：UART RX data
   - `0x4000_000C`：UART RX status
+- RTOS timer：
+  - `0x4000_0020`：mtime
+  - `0x4000_0028`：mtimecmp
+- VGA framebuffer：
+  - `0x5000_0000`：VGA framebuffer base
+  - `0x5000_7FFC`：VGA control
 
 ## 3. 時鐘架構（目前）
 
@@ -72,7 +80,59 @@ make clean
 make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 ```
 
-## 5. 本地回歸現況
+## 5. FreeRTOS / VGA Demo
+
+目前主要 RTOS demo：
+
+| Demo | 說明 |
+|---|---|
+| `rtos_smoke.mem` | UART queue producer/consumer smoke test |
+| `rtos_vga_demo.mem` | 三個 FreeRTOS task 各自更新 VGA 左/中/右區塊 |
+| `rtos_vga_queue_demo.mem` | Producer task -> FreeRTOS Queue -> Renderer task -> VGA，另有 Heartbeat task |
+
+Queue + VGA Pipeline Demo 是目前建議展示的階段成果：
+
+```text
+Producer Task -> FreeRTOS Queue -> Renderer Task -> VGA
+Heartbeat Task -> VGA / UART
+```
+
+編譯：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\build_rtos_vga_queue_demo.ps1
+```
+
+上板：
+
+```powershell
+python .\uart_send_mem.py --port COM7 --baud 115200 --mem .\build_rtos\rtos_vga_queue_demo.mem --delay 3.0 --preamble 4096 --interactive
+```
+
+VGA 版本請使用：
+
+- Top：`board_top_vga.v`
+- XDC：`xdc_for_vga.xdc`
+- 另需包含 MIG / clock wizard 對應約束：`mig.xdc`、`clk_wiz_0.xdc`
+
+畫面意義：
+
+```text
+P -> Q -> R        H
+```
+
+- `P`：Producer task 產生 event。
+- `Q`：FreeRTOS queue / event slot。
+- `R`：Renderer task 收到 queue event 後更新 VGA。
+- `H`：獨立 Heartbeat task，證明 scheduler 同時排程其他工作。
+
+更多說明：
+
+- `RTOS_API_USAGE_GUIDE_zh-TW.md`
+- `RTOS_STAGE_RESULT.md`
+- `RTOS_VGA_DEMO_NOTES.md`
+
+## 6. 本地回歸現況
 
 近期本地回歸已驗證：
 - `make mem`：PASS
@@ -80,8 +140,11 @@ make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 - `bp_redirect_scenarios_tb`：PASS
 - `icache_pipeline_tb` `TEST=1..27`：PASS
 - `TEST=24..27` 多 seed 壓測：PASS
+- `rtos_smoke.mem`：硬體上可正常跑 FreeRTOS queue smoke test
+- `rtos_vga_demo.mem`：硬體上可正常展示三 task VGA 更新
+- `rtos_vga_queue_demo.mem`：硬體上可正常展示 Queue + VGA pipeline demo
 
-## 6. Vivado 專案注意事項
+## 7. Vivado 專案注意事項
 
 `constrs_1` 建議至少包含：
 - `Nexys-A7-100T-Master.xdc`
