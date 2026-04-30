@@ -94,7 +94,7 @@ module ex_mem_reg (
   assign mem_valid_o      = valid_q;
   assign mem_size_o       = mem_f3_q;
 
-`ifndef SYNTHESIS
+`ifdef PIPE_TRACE
   always @(posedge clk) begin
     if (!stall_i && !flush_i && ex_valid_i) begin
       $display("[%0t] EX_MEM CAPTURE rd=%0d addr=0x%08x mem_read=%0d mem_write=%0d",

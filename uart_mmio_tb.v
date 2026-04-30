@@ -10,7 +10,7 @@ module uart_mmio_tb;
   localparam [31:0] UART_TX_STATUS_ADDR = 32'h4000_0004;
   localparam [31:0] UART_RX_DATA_ADDR   = 32'h4000_0008;
   localparam [31:0] UART_RX_STATUS_ADDR = 32'h4000_000C;
-  localparam [31:0] UART_BAD_ADDR       = 32'h4000_0018;
+  localparam [31:0] UART_BAD_ADDR       = 32'h4000_0030;
 
   reg clk;
   reg rst_n;

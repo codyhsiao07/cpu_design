@@ -1,14 +1,4 @@
-module id_muldiv_decode_tb;
-  localparam [3:0] ALU_ADD    = 4'b0000;
-  localparam [3:0] ALU_MUL    = 4'b1000;
-  localparam [3:0] ALU_MULH   = 4'b1001;
-  localparam [3:0] ALU_MULHSU = 4'b1010;
-  localparam [3:0] ALU_MULHU  = 4'b1011;
-  localparam [3:0] ALU_DIV    = 4'b1100;
-  localparam [3:0] ALU_DIVU   = 4'b1101;
-  localparam [3:0] ALU_REM    = 4'b1110;
-  localparam [3:0] ALU_REMU   = 4'b1111;
-
+module id_illegal_decode_tb;
   reg clk;
   reg rst_n;
   reg [31:0] id_pc_i;
@@ -110,20 +100,46 @@ module id_muldiv_decode_tb;
     end
   endfunction
 
-  task check_case;
+  function [31:0] i_type_instr;
+    input [11:0] imm12;
+    input [4:0] rs1;
+    input [2:0] funct3;
+    input [4:0] rd;
+    input [6:0] opcode;
+    begin
+      i_type_instr = {imm12, rs1, funct3, rd, opcode};
+    end
+  endfunction
+
+  function [31:0] s_type_instr;
+    input [6:0] imm_hi;
+    input [4:0] rs2;
+    input [4:0] rs1;
+    input [2:0] funct3;
+    input [4:0] imm_lo;
+    input [6:0] opcode;
+    begin
+      s_type_instr = {imm_hi, rs2, rs1, funct3, imm_lo, opcode};
+    end
+  endfunction
+
+  task check_illegal;
     input [31:0] instr;
-    input [3:0] expected_op;
+    input expected_illegal;
     input integer case_id;
     begin
       id_instr_i = instr;
       #1;
-      if (alu_op_o !== expected_op) begin
-        $display("FAIL case=%0d instr=%h alu_op=%h exp=%h", case_id, instr, alu_op_o, expected_op);
+      if (id_illegal_o !== expected_illegal) begin
+        $display("FAIL case=%0d illegal got=%0d exp=%0d instr=%08h", case_id, id_illegal_o, expected_illegal, instr);
         failures = failures + 1;
       end
-      if (!reg_write_o || alu_src_imm_o || branch_o || jal_o || jalr_o || mem_read_o || mem_write_o) begin
-        $display("FAIL case=%0d instr=%h control mismatch", case_id, instr);
-        failures = failures + 1;
+      if (expected_illegal) begin
+        if (reg_write_o || mem_read_o || mem_write_o || branch_o || jal_o || jalr_o || id_csr_en_o ||
+            id_ecall_o || id_ebreak_o || id_mret_o) begin
+          $display("FAIL case=%0d illegal instruction still has side effects", case_id);
+          failures = failures + 1;
+        end
       end
     end
   endtask
@@ -137,7 +153,7 @@ module id_muldiv_decode_tb;
     id_stall_i = 1'b0;
     current_priv_i = 2'b11;
     wb_we_i = 1'b0;
-    wb_rd_i = 5'b0;
+    wb_rd_i = 5'd0;
     wb_wd_i = 32'b0;
     failures = 0;
 
@@ -145,23 +161,28 @@ module id_muldiv_decode_tb;
     rst_n = 1'b1;
     #1;
 
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b000, 5'd1, 7'b0110011), ALU_MUL, 1);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b001, 5'd1, 7'b0110011), ALU_MULH, 2);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b010, 5'd1, 7'b0110011), ALU_MULHSU, 3);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b011, 5'd1, 7'b0110011), ALU_MULHU, 4);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b100, 5'd1, 7'b0110011), ALU_DIV, 5);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b101, 5'd1, 7'b0110011), ALU_DIVU, 6);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b110, 5'd1, 7'b0110011), ALU_REM, 7);
-    check_case(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b111, 5'd1, 7'b0110011), ALU_REMU, 8);
-    check_case(r_type_instr(7'b0000000, 5'd3, 5'd2, 3'b000, 5'd1, 7'b0110011), ALU_ADD, 9);
+    check_illegal(i_type_instr(12'h300, 5'd2, 3'b001, 5'd1, 7'b1110011), 1'b0, 1); // legal CSRRW mstatus
+    check_illegal(i_type_instr(12'hC00, 5'd2, 3'b001, 5'd1, 7'b1110011), 1'b1, 2); // unsupported CSR
+    check_illegal(i_type_instr(12'h300, 5'd2, 3'b101, 5'd1, 7'b1110011), 1'b0, 3); // legal CSRRWI mstatus
+    check_illegal(i_type_instr(12'h004, 5'd2, 3'b001, 5'd1, 7'b1100111), 1'b1, 4); // JALR with bad funct3
+    check_illegal(r_type_instr(7'b0000000, 5'd3, 5'd2, 3'b010, 5'd1, 7'b1100011), 1'b1, 5); // invalid branch funct3
+    check_illegal(i_type_instr(12'h004, 5'd2, 3'b011, 5'd1, 7'b0000011), 1'b1, 6); // invalid load funct3
+    check_illegal(s_type_instr(7'b0000000, 5'd3, 5'd2, 3'b011, 5'd4, 7'b0100011), 1'b1, 7); // invalid store funct3
+    check_illegal(i_type_instr(12'b0100000_00001, 5'd2, 3'b001, 5'd1, 7'b0010011), 1'b1, 8); // bad SLLI encoding
+    check_illegal(r_type_instr(7'b0000001, 5'd3, 5'd2, 3'b000, 5'd1, 7'b0110011), 1'b0, 9); // legal MUL
+    check_illegal(r_type_instr(7'b0010000, 5'd3, 5'd2, 3'b000, 5'd1, 7'b0110011), 1'b1, 10); // bad OP funct7
+    check_illegal(32'h0000_000F, 1'b0, 11); // legal FENCE decoded as NOP
+    check_illegal(32'hFFFF_FFFF, 1'b1, 12); // unknown opcode
+    current_priv_i = 2'b00;
+    check_illegal(32'h3020_0073, 1'b1, 13); // mret illegal outside M-mode
+    check_illegal(i_type_instr(12'h300, 5'd2, 3'b001, 5'd1, 7'b1110011), 1'b1, 14); // machine CSR illegal in U-mode
 
     if (failures != 0) begin
-      $display("FAIL: id_muldiv_decode_tb failures=%0d", failures);
+      $display("FAIL: id_illegal_decode_tb failures=%0d", failures);
       $finish(1);
     end
 
-    $display("PASS: id_muldiv_decode_tb");
+    $display("PASS: id_illegal_decode_tb");
     $finish;
   end
-
 endmodule

@@ -133,6 +133,8 @@ def main():
     p.add_argument("--mem", required=True, help="mem file with 32-bit hex words")
     p.add_argument("--delay", type=float, default=0.0, help="delay before send (sec)")
     p.add_argument("--preamble", type=int, default=64, help="number of 0x55 bytes before sync")
+    p.add_argument("--preamble-seconds", type=float, default=0.0,
+                   help="send 0x55 preamble for this many UART line seconds before sync")
     p.add_argument("--zero", action="store_true", help="send sync + zero length only")
     p.add_argument("--listen", action="store_true",
                    help="keep the port open after upload and print RX bytes")
@@ -163,6 +165,15 @@ def main():
             pass
         if args.delay > 0:
             time.sleep(args.delay)
+        if args.preamble_seconds > 0:
+            # UART sends roughly 10 line bits per 8N1 byte.  A long 0x55 leader
+            # lets the board finish DDR calibration/memtest before the real sync.
+            timed_preamble = max(1, int(args.baud * args.preamble_seconds / 10.0))
+            chunk = b"\x55" * 4096
+            while timed_preamble > 0:
+                n = min(timed_preamble, len(chunk))
+                ser.write(chunk[:n])
+                timed_preamble -= n
         if args.preamble > 0:
             ser.write(b"\x55" * args.preamble)
         ser.write(sync)

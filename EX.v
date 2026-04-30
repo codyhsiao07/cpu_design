@@ -25,6 +25,8 @@ module ex_stage (
   input         ex_shift_arith_i,    // 1: arithmetic right shift (SRA/SRAI)
   input         ex_is_auipc_i,       // 1: AUIPC
   input         ex_is_lui_i,         // 1: LUI
+  input         ex_csr_en_i,
+  input  [31:0] ex_csr_rdata_i,
 
   // Outputs
   output ex_stall_o,
@@ -179,7 +181,9 @@ module ex_stage (
   end
 
   always @(*) begin
-    if (is_mul) begin
+    if (ex_csr_en_i) begin
+      ex_result_r = ex_csr_rdata_i;
+    end else if (is_mul) begin
       ex_result_r = mul_result;
     end else if (is_div) begin
       ex_result_r = div_quotient;

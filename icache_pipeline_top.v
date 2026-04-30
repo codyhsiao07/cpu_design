@@ -464,7 +464,7 @@ module icache_pipeline_top #(
         .beat3_ok_o      (boot_memtest3_ok_int)
       );
 
-      assign memtest_active_w = init_calib_complete && ~boot_memtest_done_int;
+      assign memtest_active_w = (UART_BOOT_EN != 0) && init_calib_complete && ~boot_memtest_done_int;
 
       // UART bootloader (optional)
       if (UART_BOOT_EN) begin : GEN_UART_BOOT
@@ -550,13 +550,6 @@ module icache_pipeline_top #(
         assign boot_verify0_memtest0_ok_int = 1'b0;
         assign boot_verify_req_seen_int = 1'b0;
         assign boot_verify_rsp_seen_int = 1'b0;
-        assign boot_memtest_pass_int = 1'b1;
-        assign boot_memtest_done_int = 1'b1;
-        assign boot_memtest_rd_seen_int = 1'b0;
-        assign boot_memtest0_ok_int = 1'b1;
-        assign boot_memtest1_ok_int = 1'b1;
-        assign boot_memtest2_ok_int = 1'b1;
-        assign boot_memtest3_ok_int = 1'b1;
       end
 
       // MIG app mux: memtest first, then bootloader, then L2.
@@ -627,6 +620,8 @@ module icache_pipeline_top #(
       assign d_l2_rsp_err_int   = d_l2_rsp_err;
     end
   endgenerate
+
+  wire uart_mmio_launcher_reset_fire;
 
   always @(posedge core_clk or negedge core_rst_n_base) begin
     if (!core_rst_n_base) begin
@@ -780,15 +775,35 @@ module icache_pipeline_top #(
   wire        fetch_req_kill  = fe_redirect_valid;
   wire        fetch_req_hs;
 
+  wire        fetch_resp_raw_valid;
+  wire        fetch_resp_raw_ready;
+  wire [31:0] fetch_resp_raw_inst;
+  wire [31:0] fetch_resp_raw_pc;
+  wire        fetch_resp_raw_err;
+  reg         fetch_resp_buf_valid_q;
+  reg  [31:0] fetch_resp_buf_inst_q;
+  reg  [31:0] fetch_resp_buf_pc_q;
+  reg         fetch_resp_buf_err_q;
   wire        fetch_resp_valid;
   wire        fetch_resp_valid_pipe;
   wire        fetch_resp_valid_filt;
-  wire        fetch_resp_ready = ~stall_id;
+  wire        fetch_resp_if_ready = ~stall_id;
   wire [31:0] fetch_resp_inst;
   wire [31:0] fetch_resp_pc;
   wire        fetch_resp_err;
+  wire        fetch_resp_buf_push;
+  wire        fetch_resp_buf_pop;
+  wire        fetch_resp_buf_blocked;
+  reg         icache_flush_pending_q;
+  wire        icache_flush_ack_w;
+  wire        sys_flush_now;
+  wire        ifetch_sync_candidate;
+  wire        ifetch_sync_trap;
   reg  [31:0] last_if_resp_pc_q;
   reg         last_if_resp_v_q;
+  reg         irq_pc_override_valid_q;
+  reg  [31:0] irq_pc_override_q;
+  wire        irq_quiesce_id;
   wire        stall_if_hdu, stall_id_hdu, stall_ex_hdu, stall_exmem_hdu;
 
 `ifdef FAST_SIM
@@ -819,11 +834,13 @@ module icache_pipeline_top #(
     .fetch_req_addr_i   (fetch_req_addr),
     .fetch_req_kill_i   (fetch_req_kill),
     .fetch_req_ready_o  (fetch_req_ready),
-    .fetch_resp_valid_o (fetch_resp_valid),
-    .fetch_resp_ready_i (fetch_resp_ready),
-    .fetch_resp_inst_o  (fetch_resp_inst),
-    .fetch_resp_pc_o    (fetch_resp_pc),
-    .fetch_resp_err_o   (fetch_resp_err),
+    .fetch_resp_valid_o (fetch_resp_raw_valid),
+    .fetch_resp_ready_i (fetch_resp_raw_ready),
+    .fetch_resp_inst_o  (fetch_resp_raw_inst),
+    .fetch_resp_pc_o    (fetch_resp_raw_pc),
+    .fetch_resp_err_o   (fetch_resp_raw_err),
+    .ic_flush_req_i     (icache_flush_pending_q),
+    .ic_flush_ack_o     (icache_flush_ack_w),
     .l2_req_valid       (l2_req_valid),
     .l2_req_ready       (i_l2_req_ready_int),
     .l2_req_addr        (l2_req_addr),
@@ -840,10 +857,51 @@ module icache_pipeline_top #(
   // Keep request valid independent from redirect. Redirect still blocks the
   // handshake through fetch_req_kill, but removing it from valid shortens the
   // critical control path that feeds the I$ stage-1 enable.
+  assign fetch_resp_valid = fetch_resp_buf_valid_q;
+  assign fetch_resp_inst  = fetch_resp_buf_inst_q;
+  assign fetch_resp_pc    = fetch_resp_buf_pc_q;
+  assign fetch_resp_err   = fetch_resp_buf_err_q;
+  assign fetch_resp_raw_ready = ~fetch_resp_buf_valid_q;
+  assign fetch_resp_buf_push = fetch_resp_raw_valid & fetch_resp_raw_ready;
+  assign fetch_resp_buf_blocked = fetch_resp_buf_valid_q;
+
+  // One-entry fetch response buffer.
+  // This decouples the I$ response hold/ready network from decode stall logic so
+  // the front-end does not synthesize into a zero-delay feedback loop.
+  always @(posedge core_clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
+      icache_flush_pending_q <= 1'b1;
+      fetch_resp_buf_valid_q <= 1'b0;
+      fetch_resp_buf_inst_q  <= 32'b0;
+      fetch_resp_buf_pc_q    <= 32'b0;
+      fetch_resp_buf_err_q   <= 1'b0;
+    end else begin
+      if (icache_flush_ack_w)
+        icache_flush_pending_q <= 1'b0;
+
+      if (fe_redirect_valid | sys_flush_now | icache_flush_pending_q) begin
+        fetch_resp_buf_valid_q <= 1'b0;
+        fetch_resp_buf_inst_q  <= 32'b0;
+        fetch_resp_buf_pc_q    <= 32'b0;
+        fetch_resp_buf_err_q   <= 1'b0;
+      end else begin
+        if (fetch_resp_buf_push) begin
+          fetch_resp_buf_valid_q <= 1'b1;
+          fetch_resp_buf_inst_q  <= fetch_resp_raw_inst;
+          fetch_resp_buf_pc_q    <= fetch_resp_raw_pc;
+          fetch_resp_buf_err_q   <= fetch_resp_raw_err;
+        end else if (fetch_resp_buf_pop) begin
+          fetch_resp_buf_valid_q <= 1'b0;
+        end
+      end
+    end
+  end
+
   wire req_blocked = fetch_req_valid & ~fetch_req_ready & ~fetch_req_kill;
-  wire resp_blocked = fetch_resp_valid & ~fetch_resp_ready;
+  wire resp_blocked = fetch_resp_raw_valid & ~fetch_resp_raw_ready;
   // On redirect cycle, suppress same-cycle fetch response into IF/ID.
   // This prevents stale wrong-path instruction from entering decode.
+  assign ifetch_sync_candidate = fetch_resp_valid_filt & fetch_resp_if_ready & fetch_resp_err;
   assign fetch_resp_valid_pipe = fetch_resp_valid & ~fe_redirect_valid;
   // Error should not be masked by redirect; expose any accepted fetch error event.
   assign ifetch_err_o = fetch_resp_valid & fetch_resp_err;
@@ -853,21 +911,24 @@ module icache_pipeline_top #(
                        (fetch_opcode == 7'b1101111) || // JAL
                        (fetch_opcode == 7'b1100111);   // JALR
   wire fetch_resp_dup_nonctrl = 1'b0;
-  assign fetch_resp_valid_filt = fetch_resp_valid_pipe && !fetch_resp_dup_nonctrl;
+  assign fetch_resp_valid_filt = fetch_resp_valid_pipe && !fetch_resp_dup_nonctrl &&
+                                 !irq_quiesce_id;
+  assign fetch_resp_buf_pop = fetch_resp_valid_filt & fetch_resp_if_ready;
 
   // Redirect cancels the request via fetch_req_kill. Do not fold redirect into
   // fetch_req_valid itself; that duplicate gating created the worst setup path
   // into the I$ request accept/CE logic.
-  assign fetch_req_valid = ~if_pending & ~stall_if_hdu;
+  assign fetch_req_valid = ~if_pending & ~stall_if_hdu & ~fetch_resp_buf_valid_q &
+                           ~icache_flush_pending_q;
   assign fetch_req_hs = fetch_req_valid & fetch_req_ready & ~fetch_req_kill;
 
   always @(posedge core_clk or negedge core_rst_n) begin
     if (!core_rst_n) begin
       if_pending <= 1'b0;
     end else begin
-      if (fe_redirect_valid) begin
+      if (fe_redirect_valid | sys_flush_now | icache_flush_pending_q) begin
         if_pending <= 1'b0;
-      end else if (fetch_resp_valid && fetch_resp_ready) begin
+      end else if (fetch_resp_buf_push) begin
         // Response wins: same-cycle request+response means no outstanding left.
         if_pending <= 1'b0;
       end else if (fetch_req_hs) begin
@@ -880,12 +941,27 @@ module icache_pipeline_top #(
     if (!core_rst_n) begin
       last_if_resp_pc_q <= 32'b0;
       last_if_resp_v_q  <= 1'b0;
-    end else if (fe_redirect_valid) begin
+      irq_pc_override_valid_q <= 1'b0;
+      irq_pc_override_q       <= 32'b0;
+    end else if (fe_redirect_valid | sys_flush_now) begin
       last_if_resp_pc_q <= 32'b0;
       last_if_resp_v_q  <= 1'b0;
-    end else if (fetch_resp_valid_filt && fetch_resp_ready) begin
+
+      if (fe_redirect_valid) begin
+        irq_pc_override_valid_q <= 1'b1;
+        irq_pc_override_q       <= fe_redirect_pc;
+      end else begin
+        irq_pc_override_valid_q <= 1'b0;
+        irq_pc_override_q       <= 32'b0;
+      end
+    end else if (fetch_resp_buf_pop) begin
       last_if_resp_pc_q <= fetch_resp_pc;
       last_if_resp_v_q  <= 1'b1;
+
+      if (irq_pc_override_valid_q && (fetch_resp_pc == irq_pc_override_q)) begin
+        irq_pc_override_valid_q <= 1'b0;
+        irq_pc_override_q       <= 32'b0;
+      end
     end
   end
 
@@ -918,6 +994,14 @@ module icache_pipeline_top #(
   wire        id_ready;
   wire        id_shift_right, id_shift_arith, id_is_auipc, id_is_lui;
   wire [2:0]  id_mem_funct3;
+  wire        id_csr_en;
+  wire [2:0]  id_csr_cmd;
+  wire [11:0] id_csr_addr;
+  wire        id_ecall;
+  wire        id_ebreak;
+  wire        id_mret;
+  wire        id_illegal;
+  wire [1:0]  csr_current_priv_w;
 
   // WB writeback signals (from WB stage to regfile)
   wire        rf_we;
@@ -931,6 +1015,7 @@ module icache_pipeline_top #(
     .id_instr_i       (id_instr),
     .id_valid_i       (id_valid),
     .id_stall_i       (stall_id),
+    .current_priv_i   (csr_current_priv_w),
     .wb_we_i          (rf_we),
     .wb_rd_i          (rf_waddr),
     .wb_wd_i          (rf_wdata),
@@ -956,7 +1041,14 @@ module icache_pipeline_top #(
     .id_shift_arith_o (id_shift_arith),
     .id_is_auipc_o    (id_is_auipc),
     .id_is_lui_o      (id_is_lui),
-    .id_mem_funct3_o  (id_mem_funct3)
+    .id_mem_funct3_o  (id_mem_funct3),
+    .id_csr_en_o      (id_csr_en),
+    .id_csr_cmd_o     (id_csr_cmd),
+    .id_csr_addr_o    (id_csr_addr),
+    .id_ecall_o       (id_ecall),
+    .id_ebreak_o      (id_ebreak),
+    .id_mret_o        (id_mret),
+    .id_illegal_o     (id_illegal)
   );
 
   // ID-stage control prediction:
@@ -978,6 +1070,13 @@ module icache_pipeline_top #(
   wire [1:0]  ex_wb_sel;
   wire        ex_shift_right, ex_shift_arith, ex_is_auipc, ex_is_lui;
   wire [2:0]  ex_mem_funct3;
+  wire        ex_csr_en;
+  wire [2:0]  ex_csr_cmd;
+  wire [11:0] ex_csr_addr;
+  wire        ex_ecall;
+  wire        ex_ebreak;
+  wire        ex_mret;
+  wire        ex_illegal;
   wire        ex_pred_taken;
   wire [31:0] ex_pred_target;
   wire        ex_br_taken;
@@ -1028,6 +1127,13 @@ module icache_pipeline_top #(
     .id_is_auipc_i    (id_is_auipc),
     .id_is_lui_i      (id_is_lui),
     .id_mem_funct3_i  (id_mem_funct3),
+    .id_csr_en_i      (id_csr_en),
+    .id_csr_cmd_i     (id_csr_cmd),
+    .id_csr_addr_i    (id_csr_addr),
+    .id_ecall_i       (id_ecall),
+    .id_ebreak_i      (id_ebreak),
+    .id_mret_i        (id_mret),
+    .id_illegal_i     (id_illegal),
     .id_pred_taken_i  (id_pred_taken),
     .id_pred_target_i (id_ctrl_target),
     .ex_mem_funct3_o  (ex_mem_funct3),
@@ -1035,6 +1141,13 @@ module icache_pipeline_top #(
     .ex_shift_arith_o (ex_shift_arith),
     .ex_is_auipc_o    (ex_is_auipc),
     .ex_is_lui_o      (ex_is_lui),
+    .ex_csr_en_o      (ex_csr_en),
+    .ex_csr_cmd_o     (ex_csr_cmd),
+    .ex_csr_addr_o    (ex_csr_addr),
+    .ex_ecall_o       (ex_ecall),
+    .ex_ebreak_o      (ex_ebreak),
+    .ex_mret_o        (ex_mret),
+    .ex_illegal_o     (ex_illegal),
     .ex_pc_o          (ex_pc),
     .ex_rs1_val_o     (ex_rs1_val),
     .ex_rs2_val_o     (ex_rs2_val),
@@ -1062,6 +1175,7 @@ module icache_pipeline_top #(
 
   // Forward dependencies from later stages for forwarding
   wire        mem_valid;
+  wire        mem_mem_read, mem_mem_write;
   wire        mem_reg_write;
   wire [1:0]  mem_wb_sel;
   wire [4:0]  mem_rd;
@@ -1075,6 +1189,64 @@ module icache_pipeline_top #(
   wire        wb_rd_wen;
   wire [4:0]  wb_rd;
   wire [31:0] wb_wdata;
+  wire [31:0] csr_rdata_w;
+  wire [31:0] csr_mtvec_w;
+  wire [31:0] csr_mepc_w;
+  wire [31:0] csr_mcause_w;
+  wire [31:0] csr_mstatus_w;
+  wire [31:0] csr_mie_w;
+  wire [31:0] csr_mip_w;
+  wire [31:0] csr_mscratch_w;
+  wire        csr_global_mie_w;
+  wire        csr_msie_en_w;
+  wire        csr_mtie_en_w;
+  wire        csr_meie_en_w;
+  wire [31:0] irq_msip_rdata_w;
+  wire [31:0] irq_meip_rdata_w;
+  wire [31:0] irq_mtime_lo_w;
+  wire [31:0] irq_mtime_hi_w;
+  wire [31:0] irq_mtimecmp_lo_w;
+  wire [31:0] irq_mtimecmp_hi_w;
+  wire        irq_soft_pending_w;
+  wire        irq_timer_pending_w;
+  wire        irq_ext_pending_w;
+  wire        irq_request_w;
+  wire [31:0] irq_cause_w;
+  wire        ex_insn_misaligned;
+  wire        ex_load_misaligned;
+  wire        ex_store_misaligned;
+  wire        mem_sync_trap;
+  wire [31:0] mem_trap_cause;
+  wire [31:0] mem_trap_pc;
+  wire        sync_trap_valid;
+  wire [31:0] sync_trap_cause;
+  wire [31:0] sync_trap_pc;
+  wire        ex_sync_trap;
+  wire        ex_mret_fire = ex_valid & ~stall_ex & ex_mret;
+  wire [31:0] ex_trap_cause;
+  wire [31:0] ex_trap_vector = {csr_mtvec_w[31:2], 2'b00};
+  wire [31:0] ex_mret_vector = {csr_mepc_w[31:2], 2'b00};
+  reg         ex_sys_redirect_valid_q;
+  reg  [31:0] ex_sys_redirect_pc_q;
+  reg         csr_trap_enter_q;
+  reg         csr_trap_is_interrupt_q;
+  reg  [31:0] csr_trap_pc_q;
+  reg  [31:0] csr_trap_cause_q;
+  reg         csr_mret_exec_q;
+  reg  [31:0] irq_arch_pc_q;
+  reg         irq_mem_pc_suppress_q;
+  wire        ex_sys_redirect_valid = ex_sys_redirect_valid_q;
+  wire [31:0] ex_sys_redirect_pc = ex_sys_redirect_pc_q;
+  wire        irq_frontend_hold;
+  wire        irq_take_now;
+  wire        irq_take_effective;
+  wire [31:0] irq_trap_pc;
+  reg  [1:0]  irq_redirect_settle_q;
+  wire        csr_exec_write_en = ex_valid & ex_csr_en & ~stall_ex;
+  wire        ex_irq_pc_commit = ex_valid & ~stall_ex & ~ex_insn_misaligned &
+                                 (ex_jal | ex_jalr | ex_br_taken);
+  wire        mem_irq_pc_commit = mem_valid & ~mem_stall & ~mem_sync_trap &
+                                  (~mem_mem_read | mem_load_valid);
 
   wire [31:0] ex_rs1_val_fwd, ex_rs2_val_fwd;
   forward_unit u_fwd (
@@ -1115,6 +1287,8 @@ module icache_pipeline_top #(
     .ex_shift_arith_i  (ex_shift_arith),
     .ex_is_auipc_i     (ex_is_auipc),
     .ex_is_lui_i       (ex_is_lui),
+    .ex_csr_en_i       (ex_csr_en),
+    .ex_csr_rdata_i    (csr_rdata_w),
     .ex_stall_o        (ex_stall_o),
     .ex_alu_result_o   (ex_alu_result),
     .ex_store_data_o   (ex_store_data),
@@ -1125,6 +1299,123 @@ module icache_pipeline_top #(
     .redirect_pc_o     (ex_redirect_pc_raw)
   );
 
+  misalign_check u_misalign (
+    .is_ctrl_taken_i          (ex_valid & ~stall_ex & (ex_jal | ex_jalr | ex_br_taken)),
+    .ctrl_target_i            (ex_redirect_pc_raw),
+    .mem_read_i               (ex_valid & ~stall_ex & ex_mem_read),
+    .mem_write_i              (ex_valid & ~stall_ex & ex_mem_write),
+    .mem_funct3_i             (ex_mem_funct3),
+    .mem_addr_i               (ex_alu_result),
+    .insn_addr_misaligned_o   (ex_insn_misaligned),
+    .load_addr_misaligned_o   (ex_load_misaligned),
+    .store_addr_misaligned_o  (ex_store_misaligned)
+  );
+
+  assign ex_sync_trap = ex_valid & ~stall_ex &
+                        (ex_ecall | ex_ebreak | ex_illegal |
+                         ex_insn_misaligned | ex_load_misaligned | ex_store_misaligned);
+  assign ex_trap_cause = ex_insn_misaligned ? 32'd0 :
+                         ex_load_misaligned ? 32'd4 :
+                         ex_store_misaligned ? 32'd6 :
+                         ex_illegal ? 32'd2 :
+                         (ex_ebreak ? 32'd3 :
+                         (ex_ecall ? ((csr_current_priv_w == 2'b00) ? 32'd8 :
+                                      ((csr_current_priv_w == 2'b01) ? 32'd9 : 32'd11))
+                                   : 32'd11));
+  assign ifetch_sync_trap = ifetch_sync_candidate &
+                            ~(mem_sync_trap | ex_sync_trap | ex_mret_fire | redirect_valid | id_pred_redirect_valid);
+  assign sync_trap_valid = mem_sync_trap | ex_sync_trap | ifetch_sync_trap;
+  assign sync_trap_cause = mem_sync_trap ? mem_trap_cause :
+                           (ex_sync_trap ? ex_trap_cause : 32'd1);
+  assign sync_trap_pc = mem_sync_trap ? mem_trap_pc :
+                        (ex_sync_trap ? ex_pc : fetch_resp_pc);
+  assign irq_take_effective = irq_take_now & ~sync_trap_valid & ~ex_mret_fire;
+  assign sys_flush_now = sync_trap_valid | irq_take_effective | ex_mret_fire;
+
+  always @(posedge core_clk or negedge core_rst_n) begin
+    if (!core_rst_n) begin
+      ex_sys_redirect_valid_q <= 1'b0;
+      ex_sys_redirect_pc_q    <= 32'b0;
+      csr_trap_enter_q        <= 1'b0;
+      csr_trap_is_interrupt_q <= 1'b0;
+      csr_trap_pc_q           <= 32'b0;
+      csr_trap_cause_q        <= 32'b0;
+      csr_mret_exec_q         <= 1'b0;
+      irq_redirect_settle_q   <= 2'b00;
+      irq_arch_pc_q           <= RESET_PC;
+      irq_mem_pc_suppress_q   <= 1'b0;
+    end else begin
+      ex_sys_redirect_valid_q <= 1'b0;
+      ex_sys_redirect_pc_q    <= 32'b0;
+      csr_trap_enter_q        <= 1'b0;
+      csr_trap_is_interrupt_q <= 1'b0;
+      csr_trap_pc_q           <= 32'b0;
+      csr_trap_cause_q        <= 32'b0;
+      csr_mret_exec_q         <= 1'b0;
+      irq_mem_pc_suppress_q   <= ex_irq_pc_commit | ex_mret_fire;
+
+      if (mem_irq_pc_commit && !irq_mem_pc_suppress_q) begin
+        irq_arch_pc_q <= mem_pc4;
+      end
+
+      if (ex_irq_pc_commit) begin
+        irq_arch_pc_q <= ex_redirect_pc_raw;
+      end else if (ex_mret_fire) begin
+        irq_arch_pc_q <= ex_mret_vector;
+      end
+
+      if (redirect_valid | ex_sys_redirect_valid | id_pred_redirect_valid |
+          ex_mret_fire | sync_trap_valid | irq_take_effective) begin
+        irq_redirect_settle_q <= 2'd2;
+      end else if (irq_redirect_settle_q != 2'b00) begin
+        irq_redirect_settle_q <= irq_redirect_settle_q - 2'd1;
+      end
+
+      if (sync_trap_valid | irq_take_effective) begin
+        ex_sys_redirect_valid_q <= 1'b1;
+        ex_sys_redirect_pc_q    <= ex_trap_vector;
+        csr_trap_enter_q        <= 1'b1;
+        csr_trap_is_interrupt_q <= irq_take_effective;
+        csr_trap_pc_q           <= sync_trap_valid ? sync_trap_pc : irq_trap_pc;
+        csr_trap_cause_q        <= sync_trap_valid ? sync_trap_cause : irq_cause_w;
+      end else if (ex_mret_fire) begin
+        ex_sys_redirect_valid_q <= 1'b1;
+        ex_sys_redirect_pc_q    <= ex_mret_vector;
+        csr_mret_exec_q         <= 1'b1;
+      end
+    end
+  end
+
+  csr_file u_csr (
+    .clk               (core_clk),
+    .rst_n             (core_rst_n),
+    .csr_en            (csr_exec_write_en),
+    .csr_cmd           (ex_csr_cmd),
+    .csr_addr          (ex_csr_addr),
+    .csr_wdata         (ex_rs1_val_fwd),
+    .csr_rdata         (csr_rdata_w),
+    .trap_enter        (csr_trap_enter_q),
+    .trap_is_interrupt (csr_trap_is_interrupt_q),
+    .trap_pc           (csr_trap_pc_q),
+    .trap_cause        (csr_trap_cause_q),
+    .mret_exec         (csr_mret_exec_q),
+    .ext_irq_pending   (irq_ext_pending_w),
+    .timer_irq_pending (irq_timer_pending_w),
+    .soft_irq_pending  (irq_soft_pending_w),
+    .mtvec_o           (csr_mtvec_w),
+    .mepc_o            (csr_mepc_w),
+    .mcause_o          (csr_mcause_w),
+    .mstatus_o         (csr_mstatus_w),
+    .mie_o             (csr_mie_w),
+    .mip_o             (csr_mip_w),
+    .mscratch_o        (csr_mscratch_w),
+    .current_priv_o    (csr_current_priv_w),
+    .global_mie_o      (csr_global_mie_w),
+    .msie_en_o         (csr_msie_en_w),
+    .mtie_en_o         (csr_mtie_en_w),
+    .meie_en_o         (csr_meie_en_w)
+  );
+
   // EX validation for predicted control flow.
   wire ex_actual_taken  = ex_jal | ex_jalr | ex_br_taken;
   wire ex_is_ctrl_valid = ex_valid & (ex_branch | ex_jal | ex_jalr);
@@ -1132,20 +1423,22 @@ module icache_pipeline_top #(
   wire ex_pred_tgt_miss = ex_actual_taken & ex_pred_taken &
                           (ex_pred_target != ex_redirect_pc_raw);
 
-  // redirect_valid/redirect_pc are for wrong-path recovery and flushing.
+  // redirect_valid/redirect_pc are for wrong-path recovery and synchronous
+  // system redirects (ecall/ebreak -> mtvec, mret -> mepc).
   assign redirect_valid = ex_is_ctrl_valid & ~stall_ex &
                           (ex_pred_dir_miss | ex_pred_tgt_miss);
   assign redirect_pc    = ex_actual_taken ? ex_redirect_pc_raw : ex_pc4;
 
-  // Front-end redirect includes both speculative ID prediction and EX recovery.
-  assign fe_redirect_valid = redirect_valid | id_pred_redirect_valid;
-  assign fe_redirect_pc    = redirect_valid ? redirect_pc : id_ctrl_target;
+  // Front-end redirect includes synchronous traps/interrupts, normal EX
+  // recovery, and speculative ID prediction.
+  assign fe_redirect_valid = ex_sys_redirect_valid | redirect_valid | id_pred_redirect_valid;
+  assign fe_redirect_pc    = ex_sys_redirect_valid ? ex_sys_redirect_pc :
+                             (redirect_valid ? redirect_pc : id_ctrl_target);
 
   // ================= EX/MEM =================
   wire [31:0] mem_store_data;
-  wire        mem_mem_read, mem_mem_write;
   wire [2:0]  mem_size;
-  wire ex_mem_flush = 1'b0;
+  wire ex_mem_flush = ex_sync_trap;
 
   ex_mem_reg u_ex_mem (
     .clk              (core_clk),
@@ -1217,6 +1510,12 @@ module icache_pipeline_top #(
   //   0x4000_000C read  -> RX status, bit0 = rx_valid, bit1 = rx_overrun
   //   0x4000_0010 read  -> launcher button status, bit0 = pressed
   //   0x4000_0014 write -> launcher soft reset request, bit0 = trigger
+  //   0x4000_0018 read/write -> MSIP synthetic pending bit, bit0
+  //   0x4000_001C read/write -> MEIP synthetic pending bit, bit0
+  //   0x4000_0020 read/write -> MTIME low 32 bits
+  //   0x4000_0024 read/write -> MTIME high 32 bits
+  //   0x4000_0028 read/write -> MTIMECMP low 32 bits
+  //   0x4000_002C read/write -> MTIMECMP high 32 bits
   // Other addresses in the region return an error response.
   localparam [31:0] UART_MMIO_BASE   = 32'h4000_0000;
   localparam [31:0] UART_MMIO_TX_STATUS = 32'h4000_0004;
@@ -1224,6 +1523,12 @@ module icache_pipeline_top #(
   localparam [31:0] UART_MMIO_RX_STATUS = 32'h4000_000C;
   localparam [31:0] UART_MMIO_LAUNCHER_STATUS = 32'h4000_0010;
   localparam [31:0] UART_MMIO_LAUNCHER_RESET  = 32'h4000_0014;
+  localparam [31:0] UART_MMIO_MSIP            = 32'h4000_0018;
+  localparam [31:0] UART_MMIO_MEIP            = 32'h4000_001C;
+  localparam [31:0] UART_MMIO_MTIME_LO        = 32'h4000_0020;
+  localparam [31:0] UART_MMIO_MTIME_HI        = 32'h4000_0024;
+  localparam [31:0] UART_MMIO_MTIMECMP_LO     = 32'h4000_0028;
+  localparam [31:0] UART_MMIO_MTIMECMP_HI     = 32'h4000_002C;
   localparam [31:0] VGA_MMIO_BASE    = 32'h5000_0000;
   localparam [31:0] VGA_MMIO_LAST    = 32'h5000_7FFF;
 
@@ -1240,13 +1545,31 @@ module icache_pipeline_top #(
       (dmem_addr_o[31:2] == UART_MMIO_LAUNCHER_STATUS[31:2]);
   wire        uart_mmio_sel_launcher_reset =
       (dmem_addr_o[31:2] == UART_MMIO_LAUNCHER_RESET[31:2]);
+  wire        uart_mmio_sel_msip =
+      (dmem_addr_o[31:2] == UART_MMIO_MSIP[31:2]);
+  wire        uart_mmio_sel_meip =
+      (dmem_addr_o[31:2] == UART_MMIO_MEIP[31:2]);
+  wire        uart_mmio_sel_mtime_lo =
+      (dmem_addr_o[31:2] == UART_MMIO_MTIME_LO[31:2]);
+  wire        uart_mmio_sel_mtime_hi =
+      (dmem_addr_o[31:2] == UART_MMIO_MTIME_HI[31:2]);
+  wire        uart_mmio_sel_mtimecmp_lo =
+      (dmem_addr_o[31:2] == UART_MMIO_MTIMECMP_LO[31:2]);
+  wire        uart_mmio_sel_mtimecmp_hi =
+      (dmem_addr_o[31:2] == UART_MMIO_MTIMECMP_HI[31:2]);
   wire        uart_mmio_addr_valid =
       uart_mmio_sel_tx_data |
       uart_mmio_sel_tx_status |
       uart_mmio_sel_rx_data |
       uart_mmio_sel_rx_status |
       uart_mmio_sel_launcher_status |
-      uart_mmio_sel_launcher_reset;
+      uart_mmio_sel_launcher_reset |
+      uart_mmio_sel_msip |
+      uart_mmio_sel_meip |
+      uart_mmio_sel_mtime_lo |
+      uart_mmio_sel_mtime_hi |
+      uart_mmio_sel_mtimecmp_lo |
+      uart_mmio_sel_mtimecmp_hi;
   wire        uart_mmio_req_valid = dmem_req_o & uart_mmio_hit;
   wire        vga_mmio_hit =
       (USE_VGA != 0) &&
@@ -1279,7 +1602,14 @@ module icache_pipeline_top #(
       1'b1;
   wire uart_mmio_fire = uart_mmio_req_valid & uart_mmio_ready;
   wire uart_mmio_write_err =
-      dmem_we_o & (~(uart_mmio_sel_tx_data | uart_mmio_sel_launcher_reset) | ~uart_mmio_has_byte);
+      dmem_we_o & (~(uart_mmio_sel_tx_data |
+                     uart_mmio_sel_launcher_reset |
+                     uart_mmio_sel_msip |
+                     uart_mmio_sel_meip |
+                     uart_mmio_sel_mtime_lo |
+                     uart_mmio_sel_mtime_hi |
+                     uart_mmio_sel_mtimecmp_lo |
+                     uart_mmio_sel_mtimecmp_hi) | ~uart_mmio_has_byte);
   wire uart_mmio_read_err =
       (~dmem_we_o) & (~uart_mmio_addr_valid);
   wire uart_mmio_rsp_err = uart_mmio_fire & (uart_mmio_write_err | uart_mmio_read_err);
@@ -1288,12 +1618,30 @@ module icache_pipeline_top #(
       uart_mmio_sel_rx_data   ? {24'd0, uart_rx_data_q} :
       uart_mmio_sel_rx_status ? {30'd0, uart_rx_overrun_q, uart_rx_valid_q} :
       uart_mmio_sel_launcher_status ? {31'd0, launcher_reset_btn_q} :
+      uart_mmio_sel_msip      ? irq_msip_rdata_w :
+      uart_mmio_sel_meip      ? irq_meip_rdata_w :
+      uart_mmio_sel_mtime_lo  ? irq_mtime_lo_w :
+      uart_mmio_sel_mtime_hi  ? irq_mtime_hi_w :
+      uart_mmio_sel_mtimecmp_lo ? irq_mtimecmp_lo_w :
+      uart_mmio_sel_mtimecmp_hi ? irq_mtimecmp_hi_w :
       32'd0;
   wire uart_mmio_rsp_valid = uart_mmio_fire;
   wire uart_mmio_tx_fire =
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_tx_data & uart_mmio_has_byte;
-  wire uart_mmio_launcher_reset_fire =
+  assign uart_mmio_launcher_reset_fire =
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_launcher_reset & uart_mmio_has_byte & uart_mmio_wbyte[0];
+  wire uart_mmio_msip_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_msip & uart_mmio_has_byte;
+  wire uart_mmio_meip_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_meip & uart_mmio_has_byte;
+  wire uart_mmio_mtime_lo_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtime_lo & uart_mmio_has_byte;
+  wire uart_mmio_mtime_hi_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtime_hi & uart_mmio_has_byte;
+  wire uart_mmio_mtimecmp_lo_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtimecmp_lo & uart_mmio_has_byte;
+  wire uart_mmio_mtimecmp_hi_fire =
+      uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtimecmp_hi & uart_mmio_has_byte;
   wire uart_mmio_rx_pop =
       uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_data;
   wire uart_mmio_rx_status_read =
@@ -1429,6 +1777,39 @@ module icache_pipeline_top #(
     .Tx_busy (uart_tx_busy)
   );
 
+  machine_irq_sources u_irq_sources (
+    .clk              (core_clk),
+    .rst_n            (core_rst_n),
+    .msip_we_i        (uart_mmio_msip_fire),
+    .msip_wdata_i     (dmem_wdata_o),
+    .meip_we_i        (uart_mmio_meip_fire),
+    .meip_wdata_i     (dmem_wdata_o),
+    .mtime_lo_we_i    (uart_mmio_mtime_lo_fire),
+    .mtime_lo_wdata_i (dmem_wdata_o),
+    .mtime_hi_we_i    (uart_mmio_mtime_hi_fire),
+    .mtime_hi_wdata_i (dmem_wdata_o),
+    .mtimecmp_lo_we_i (uart_mmio_mtimecmp_lo_fire),
+    .mtimecmp_lo_wdata_i(dmem_wdata_o),
+    .mtimecmp_hi_we_i (uart_mmio_mtimecmp_hi_fire),
+    .mtimecmp_hi_wdata_i(dmem_wdata_o),
+    .ext_irq_line_i   (uart_rx_valid_q),
+    .global_mie_i     (csr_global_mie_w),
+    .msie_en_i        (csr_msie_en_w),
+    .mtie_en_i        (csr_mtie_en_w),
+    .meie_en_i        (csr_meie_en_w),
+    .msip_rdata_o     (irq_msip_rdata_w),
+    .meip_rdata_o     (irq_meip_rdata_w),
+    .mtime_lo_o       (irq_mtime_lo_w),
+    .mtime_hi_o       (irq_mtime_hi_w),
+    .mtimecmp_lo_o    (irq_mtimecmp_lo_w),
+    .mtimecmp_hi_o    (irq_mtimecmp_hi_w),
+    .soft_irq_pending_o (irq_soft_pending_w),
+    .timer_irq_pending_o(irq_timer_pending_w),
+    .ext_irq_pending_o  (irq_ext_pending_w),
+    .irq_request_o      (irq_request_w),
+    .irq_cause_o        (irq_cause_w)
+  );
+
   // D$ instance (blocking cache)
   wire        dcache_cpu_req_ready;
   wire        dcache_cpu_rsp_valid;
@@ -1493,6 +1874,9 @@ module icache_pipeline_top #(
                           (vga_mmio_hit ? vga_mmio_rsp_err : dcache_cpu_rsp_err);
   assign store_done_i  = dmem_rvalid_i;
   wire        mem_err_event = dmem_rvalid_i & dmem_rsp_err_i;
+  assign mem_sync_trap = mem_err_event;
+  assign mem_trap_cause = mem_mem_write ? 32'd7 : 32'd5;
+  assign mem_trap_pc = mem_pc4 - 32'd4;
 
   // ================= MEM/WB =================
   wire        wb_valid;
@@ -1542,6 +1926,21 @@ module icache_pipeline_top #(
   assign wb_rd_o    = rf_waddr;
   assign wb_wdata_o = rf_wdata;
 
+  // Interrupts are taken between instructions. When one is pending, stop
+  // feeding younger instructions into IF/ID, but let the current ID
+  // instruction continue draining into EX so returns/redirects resolve before
+  // we snapshot mepc.
+  //
+  // Keep this hold independent from same-cycle trap/mret combinational logic;
+  // otherwise the IRQ quiesce path can feed predicted redirect / ifetch trap
+  // masking and create a control loop.
+  assign irq_take_now      = irq_request_w & ~id_valid & ~ex_valid & ~mem_valid & ~wb_valid & ~mem_stall &
+                             (irq_redirect_settle_q == 2'b00);
+  assign irq_frontend_hold = irq_request_w & ~irq_take_now;
+  assign irq_quiesce_id    = irq_frontend_hold;
+  assign irq_trap_pc       = irq_pc_override_valid_q ? irq_pc_override_q :
+                             irq_arch_pc_q;
+
   // ================= Hazard/Control =================
   wire flush_ifid_hdu, flush_idex_hdu;
   wire [31:0] pending_load_mask = 32'b0;
@@ -1573,12 +1972,13 @@ module icache_pipeline_top #(
   );
 
   // Front-end hold while an outstanding fetch exists or handshake is back-pressured.
-  assign stall_if    = stall_if_hdu | if_pending | req_blocked | resp_blocked;
+  assign stall_if    = stall_if_hdu | if_pending | req_blocked | resp_blocked |
+                       fetch_resp_buf_blocked | icache_flush_pending_q | irq_frontend_hold;
   assign stall_id    = stall_id_hdu;
   assign stall_ex    = stall_ex_hdu;
   assign stall_exmem = stall_exmem_hdu;
-  assign flush_ifid  = flush_ifid_hdu;
-  assign flush_idex  = flush_idex_hdu;
+  assign flush_ifid  = flush_ifid_hdu | sys_flush_now;
+  assign flush_idex  = flush_idex_hdu | sys_flush_now;
 
 `ifndef SYNTHESIS
   reg ifdbg_en;
@@ -1597,7 +1997,7 @@ module icache_pipeline_top #(
                  $time, fetch_req_addr, if_pending, stall_if, fetch_req_kill);
         ifdbg_cnt <= ifdbg_cnt + 1;
       end
-      if (fetch_resp_valid && fetch_resp_ready) begin
+      if (fetch_resp_buf_pop) begin
         $display("[IFDBG %0t] RESP pc=0x%08x inst=0x%08x pend=%0d stall_if=%0d",
                  $time, fetch_resp_pc, fetch_resp_inst, if_pending, stall_if);
         ifdbg_cnt <= ifdbg_cnt + 1;

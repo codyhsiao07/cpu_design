@@ -1,4 +1,4 @@
-// id_ex_reg.v -- ID/EX pipeline register (RV32I, no C extension)
+// id_ex_reg.v -- ID/EX pipeline register (RV32I/RV32M, no C extension)
 // Latches operands, immediates, and control from ID; handles stall/flush.
 module id_ex_reg (
   input         clk,
@@ -36,6 +36,13 @@ module id_ex_reg (
   input         id_is_auipc_i,
   input         id_is_lui_i,
   input  [2:0]  id_mem_funct3_i,
+  input         id_csr_en_i,
+  input  [2:0]  id_csr_cmd_i,
+  input  [11:0] id_csr_addr_i,
+  input         id_ecall_i,
+  input         id_ebreak_i,
+  input         id_mret_i,
+  input         id_illegal_i,
   input         id_pred_taken_i,
   input  [31:0] id_pred_target_i,
   output [2:0]  ex_mem_funct3_o,
@@ -43,6 +50,13 @@ module id_ex_reg (
   output        ex_shift_arith_o,
   output        ex_is_auipc_o,
   output        ex_is_lui_o,
+  output        ex_csr_en_o,
+  output [2:0]  ex_csr_cmd_o,
+  output [11:0] ex_csr_addr_o,
+  output        ex_ecall_o,
+  output        ex_ebreak_o,
+  output        ex_mret_o,
+  output        ex_illegal_o,
 
   // ===== Outputs to EX stage =====
   output [31:0] ex_pc_o,
@@ -85,6 +99,13 @@ module id_ex_reg (
   reg        valid_q;
   reg [2:0]  mem_f3_q;
   reg        shift_right_q, shift_arith_q, is_auipc_q, is_lui_q;
+  reg        csr_en_q;
+  reg [2:0]  csr_cmd_q;
+  reg [11:0] csr_addr_q;
+  reg        ecall_q;
+  reg        ebreak_q;
+  reg        mret_q;
+  reg        illegal_q;
   reg        pred_taken_q;
   reg [31:0] pred_target_q;
   reg        last_issue_valid_q;
@@ -127,6 +148,13 @@ module id_ex_reg (
   wire        shift_arith_d = kill_issue ? 1'b0   : (stall_i ? shift_arith_q : id_shift_arith_i);
   wire        is_auipc_d    = kill_issue ? 1'b0   : (stall_i ? is_auipc_q    : id_is_auipc_i);
   wire        is_lui_d      = kill_issue ? 1'b0   : (stall_i ? is_lui_q      : id_is_lui_i);
+  wire        csr_en_d      = kill_issue ? 1'b0   : (stall_i ? csr_en_q      : id_csr_en_i);
+  wire [2:0]  csr_cmd_d     = kill_issue ? 3'b000 : (stall_i ? csr_cmd_q     : id_csr_cmd_i);
+  wire [11:0] csr_addr_d    = kill_issue ? 12'b0  : (stall_i ? csr_addr_q    : id_csr_addr_i);
+  wire        ecall_d       = kill_issue ? 1'b0   : (stall_i ? ecall_q       : id_ecall_i);
+  wire        ebreak_d      = kill_issue ? 1'b0   : (stall_i ? ebreak_q      : id_ebreak_i);
+  wire        mret_d        = kill_issue ? 1'b0   : (stall_i ? mret_q        : id_mret_i);
+  wire        illegal_d     = kill_issue ? 1'b0   : (stall_i ? illegal_q     : id_illegal_i);
   wire        pred_taken_d  = kill_issue ? 1'b0   : (stall_i ? pred_taken_q  : id_pred_taken_i);
   wire [31:0] pred_target_d = kill_issue ? 32'b0  : (stall_i ? pred_target_q : id_pred_target_i);
 
@@ -155,6 +183,13 @@ module id_ex_reg (
       shift_arith_q  <= 1'b0;
       is_auipc_q     <= 1'b0;
       is_lui_q       <= 1'b0;
+      csr_en_q       <= 1'b0;
+      csr_cmd_q      <= 3'b000;
+      csr_addr_q     <= 12'b0;
+      ecall_q        <= 1'b0;
+      ebreak_q       <= 1'b0;
+      mret_q         <= 1'b0;
+      illegal_q      <= 1'b0;
       mem_f3_q       <= 3'b010;
       pred_taken_q   <= 1'b0;
       pred_target_q  <= 32'b0;
@@ -188,6 +223,13 @@ module id_ex_reg (
       shift_arith_q  <= shift_arith_d;
       is_auipc_q     <= is_auipc_d;
       is_lui_q       <= is_lui_d;
+      csr_en_q       <= csr_en_d;
+      csr_cmd_q      <= csr_cmd_d;
+      csr_addr_q     <= csr_addr_d;
+      ecall_q        <= ecall_d;
+      ebreak_q       <= ebreak_d;
+      mret_q         <= mret_d;
+      illegal_q      <= illegal_d;
       mem_f3_q       <= mem_f3_d;
       pred_taken_q   <= pred_taken_d;
       pred_target_q  <= pred_target_d;
@@ -238,9 +280,16 @@ module id_ex_reg (
   assign ex_shift_arith_o = shift_arith_q;
   assign ex_is_auipc_o    = is_auipc_q;
   assign ex_is_lui_o      = is_lui_q;
+  assign ex_csr_en_o      = csr_en_q;
+  assign ex_csr_cmd_o     = csr_cmd_q;
+  assign ex_csr_addr_o    = csr_addr_q;
+  assign ex_ecall_o       = ecall_q;
+  assign ex_ebreak_o      = ebreak_q;
+  assign ex_mret_o        = mret_q;
+  assign ex_illegal_o     = illegal_q;
   assign ex_mem_funct3_o  = mem_f3_q;
 
-`ifndef SYNTHESIS
+`ifdef PIPE_TRACE
   // Trace instructions entering EX stage to help debug dropped ops
   always @(posedge clk) begin
     if (!stall_i && !flush_i && id_valid_i) begin

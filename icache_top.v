@@ -30,6 +30,9 @@ module icache_top #(
   output [ADDR_WIDTH-1:0] fetch_resp_pc_o,
   output                  fetch_resp_err_o,
 
+  input                   ic_flush_req_i,
+  output                  ic_flush_ack_o,
+
   // L2 interface
   output                  l2_req_valid,
   input                   l2_req_ready,
@@ -45,7 +48,6 @@ module icache_top #(
   input                   l2_rsp_err
 );
 
-  wire ic_flush_ack;
   wire ic_inv_ack;
 
   i_cache #(
@@ -74,8 +76,8 @@ module icache_top #(
     .if_resp_pc    (fetch_resp_pc_o),
     .if_resp_err   (fetch_resp_err_o),
 
-    .ic_flush_req  (1'b0),
-    .ic_flush_ack  (ic_flush_ack),
+    .ic_flush_req  (ic_flush_req_i),
+    .ic_flush_ack  (ic_flush_ack_o),
     .ic_inv_valid  (1'b0),
     .ic_inv_all    (1'b0),
     .ic_inv_index  ({INDEX_BITS{1'b0}}),

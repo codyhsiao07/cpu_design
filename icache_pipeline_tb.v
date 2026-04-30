@@ -5,9 +5,12 @@
 module icache_pipeline_tb;
   localparam ADDR_WIDTH = 32;
   localparam L2_DATA_W  = 64;
-  localparam MEM_WORDS  = 256;
-  localparam USE_MIG    = 1;
-  localparam [31:0] RESET_PC = USE_MIG ? 32'h8000_0000 : 32'h0000_0000;
+  parameter integer MEM_WORDS = 262144;
+  parameter integer USE_MIG   = 1;
+  parameter [31:0] RESET_PC   = (USE_MIG != 0) ? 32'h8000_0000 : 32'h0000_0000;
+  localparam integer UART_CLK_HZ = 100_000_000;
+  localparam integer UART_BAUD   = 1_000_000;
+  localparam integer UART_CLKS_PER_BIT = UART_CLK_HZ / UART_BAUD;
 
   reg                   clk;
   reg                   rst_n;
@@ -69,12 +72,22 @@ module icache_pipeline_tb;
   wire [31:0]           wb_wdata;
   wire                  ifetch_err;
   wire                  boot_done;
+  integer               rtos_uart_mon;
+  integer               rtos_uart_finish_on_pass;
+  integer               rtos_trap_trace;
+  integer               rtos_pass_seen;
+  integer               uart_mon_bit;
+  reg [7:0]             uart_mon_byte;
+  reg [8*15-1:0]        uart_pass_window;
 
   // DUT
   icache_pipeline_top #(
     .ADDR_WIDTH (ADDR_WIDTH),
     .L2_DATA_W  (L2_DATA_W),
     .USE_MIG    (USE_MIG),
+    .UART_BAUD   (UART_BAUD),
+    .UART_CLK_HZ (UART_CLK_HZ),
+    .BOOT_RELEASE_CYCLES(1),
     .RESET_PC   (RESET_PC)
   ) dut (
     .clk          (clk),
@@ -138,11 +151,18 @@ module icache_pipeline_tb;
   // Shared memory for I$/D$
   reg [31:0] mem [0:MEM_WORDS-1];
 
+  function [31:0] mem_index;
+    input [31:0] addr;
+    begin
+      mem_index = (addr[31] != 1'b0) ? ((addr - 32'h8000_0000) >> 2) : (addr >> 2);
+    end
+  endfunction
+
   function [31:0] mem_read_word;
     input [31:0] addr;
     reg [31:0] idx;
     begin
-      idx = addr[31:2];
+      idx = mem_index(addr);
       if (idx < MEM_WORDS)
         mem_read_word = mem[idx];
       else
@@ -181,7 +201,7 @@ module icache_pipeline_tb;
     reg [31:0] idx;
     reg [31:0] word;
     begin
-      idx = addr[31:2];
+      idx = mem_index(addr);
       if (idx < MEM_WORDS) begin
         word = mem[idx];
         case (addr[1:0])
@@ -384,7 +404,37 @@ module icache_pipeline_tb;
   wire                  mon_d_rsp_err   = USE_MIG ? dut.d_l2_rsp_err_int : d_l2_rsp_err;
   wire [2:0]            cov_ic_state_cur = dut.u_icache.u_icache.state;
   wire [3:0]            cov_dc_state_cur = dut.u_dcache.state;
-  wire [4:0]            cov_l2_state_cur = USE_MIG ? dut.GEN_MIG.u_l2.u_core.state : 5'd0;
+  wire [4:0]            mig_l2_state_dbg;
+  wire                  mig_l2_sel_busy_dbg;
+  wire                  mig_l2_sel_is_d_dbg;
+  wire                  mig_app_en_dbg;
+  wire                  mig_app_rdy_dbg;
+  wire [2:0]            mig_app_cmd_dbg;
+  wire [26:0]           mig_app_addr_dbg;
+  wire                  mig_app_rd_valid_dbg;
+  wire [4:0]            cov_l2_state_cur = mig_l2_state_dbg;
+
+  generate
+    if (USE_MIG != 0) begin : GEN_TB_MIG_DBG
+      assign mig_l2_state_dbg = dut.GEN_MIG.u_l2.u_core.state;
+      assign mig_l2_sel_busy_dbg = dut.GEN_MIG.u_l2.sel_busy;
+      assign mig_l2_sel_is_d_dbg = dut.GEN_MIG.u_l2.sel_is_d;
+      assign mig_app_en_dbg = dut.GEN_MIG.app_en;
+      assign mig_app_rdy_dbg = dut.GEN_MIG.app_rdy;
+      assign mig_app_cmd_dbg = dut.GEN_MIG.app_cmd;
+      assign mig_app_addr_dbg = dut.GEN_MIG.app_addr;
+      assign mig_app_rd_valid_dbg = dut.GEN_MIG.app_rd_data_valid;
+    end else begin : GEN_TB_NO_MIG_DBG
+      assign mig_l2_state_dbg = 5'd0;
+      assign mig_l2_sel_busy_dbg = 1'b0;
+      assign mig_l2_sel_is_d_dbg = 1'b0;
+      assign mig_app_en_dbg = 1'b0;
+      assign mig_app_rdy_dbg = 1'b0;
+      assign mig_app_cmd_dbg = 3'd0;
+      assign mig_app_addr_dbg = 27'd0;
+      assign mig_app_rd_valid_dbg = 1'b0;
+    end
+  endgenerate
 
 `ifdef SYNTHESIS
   reg tb_i_err_force_active;
@@ -530,6 +580,58 @@ module icache_pipeline_tb;
       $finish;
     end
   endtask
+
+  task uart_wait_clocks;
+    input integer n;
+    integer i;
+    begin
+      for (i = 0; i < n; i = i + 1)
+        @(posedge clk);
+    end
+  endtask
+
+  initial begin
+    rtos_uart_mon = 0;
+    rtos_uart_finish_on_pass = 0;
+    rtos_trap_trace = 0;
+    rtos_pass_seen = 0;
+    uart_pass_window = {8*15{1'b0}};
+    #1;
+    if ($value$plusargs("RTOS_UART_MON=%d", rtos_uart_mon)) begin
+      // optional UART monitor
+    end
+    if ($value$plusargs("RTOS_UART_FINISH_ON_PASS=%d", rtos_uart_finish_on_pass)) begin
+      // optional early finish once RTOS_SMOKE_PASS is decoded
+    end
+    if ($value$plusargs("RTOS_TRAP_TRACE=%d", rtos_trap_trace)) begin
+      // optional RTOS trap/mret trace
+    end
+
+    forever begin
+      @(negedge uart_tx);
+      if (rtos_uart_mon != 0 && rst_n) begin
+        uart_wait_clocks(UART_CLKS_PER_BIT + (UART_CLKS_PER_BIT / 2));
+        for (uart_mon_bit = 0; uart_mon_bit < 8; uart_mon_bit = uart_mon_bit + 1) begin
+          uart_mon_byte[uart_mon_bit] = uart_tx;
+          uart_wait_clocks(UART_CLKS_PER_BIT);
+        end
+        $write("%c", uart_mon_byte);
+        $fflush;
+        if (uart_mon_byte == 8'h0A) begin
+          if (rtos_pass_seen != 0) begin
+            $display("PASS: RTOS UART observed RTOS_SMOKE_PASS");
+            if (rtos_uart_finish_on_pass != 0)
+              tb_finish;
+          end
+        end else if (uart_mon_byte != 8'h0D) begin
+          uart_pass_window = {uart_pass_window[(8*14)-1:0], uart_mon_byte};
+          if ({uart_pass_window[(8*14)-1:0], uart_mon_byte} == "RTOS_SMOKE_PASS") begin
+            rtos_pass_seen = 1;
+          end
+        end
+      end
+    end
+  end
 
   assign l2_req_ready = USE_MIG ? 1'b0 : ~pending;
 
@@ -1020,6 +1122,8 @@ module icache_pipeline_tb;
 
     $display("[TB CFG] TEST=%0d MEMFILE=%0s EXPECT_RD=x%0d EXPECT_VAL=0x%08x MAXCYCLES=%0d",
              test_id, memfile, expect_rd, expect_val, max_cycles);
+    $display("[TB CFG] USE_MIG=%0d RESET_PC=0x%08x MEM_WORDS=%0d",
+             USE_MIG, RESET_PC, MEM_WORDS);
     $display("[TB CFG] RAND_MEM=%0d SEED=%0d RAND_I_MAX=%0d RAND_D_MAX=%0d ASSERT_EN=%0d STALL_WDOG=%0d",
              rand_mem_en, rand_seed, rand_i_delay_max, rand_d_delay_max, assert_en, stall_watchdog_max);
     $display("[TB CFG] TRACE_EN=%0d TRACE_FILE=%0s COV_EN=%0d COV_FILE=%0s",
@@ -1146,8 +1250,53 @@ module icache_pipeline_tb;
 
   always @(posedge clk) begin
     if (rst_n && (cycles > max_cycles)) begin
+      $display("TIMEOUT_STATE pc=0x%08x id_pc=0x%08x ex_pc=0x%08x mem_pc4=0x%08x core_running=%0d",
+               dut.if_pc, dut.id_pc, dut.ex_pc, dut.mem_pc4, dut.core_running_o);
+      $display("TIMEOUT_STATE stall if/id/ex/exmem=%0d/%0d/%0d/%0d redirect=%0d sys_flush=%0d",
+               dut.stall_if, dut.stall_id, dut.stall_ex, dut.stall_exmem,
+               dut.fe_redirect_valid, dut.sys_flush_now);
+      $display("TIMEOUT_STATE ic_state=%0d dc_state=%0d if_pending=%0d fetch_req v/r=%0d/%0d fetch_rsp v/r=%0d/%0d",
+               dut.u_icache.u_icache.state, dut.u_dcache.state, dut.if_pending,
+               dut.fetch_req_valid, dut.fetch_req_ready,
+               dut.fetch_resp_valid, dut.fetch_resp_if_ready);
+      $display("TIMEOUT_STATE csr mtvec=0x%08x mepc=0x%08x mcause=0x%08x mstatus=0x%08x mie=0x%08x mip=0x%08x mscratch=0x%08x priv=%0d",
+               dut.csr_mtvec_w, dut.csr_mepc_w, dut.csr_mcause_w, dut.csr_mstatus_w,
+               dut.csr_mie_w, dut.csr_mip_w, dut.csr_mscratch_w, dut.csr_current_priv_w);
+      $display("TIMEOUT_STATE irq request=%0d timer_pending=%0d soft_pending=%0d ext_pending=%0d global_mie=%0d mtie=%0d mtime=0x%08x_%08x mtimecmp=0x%08x_%08x",
+               dut.irq_request_w, dut.irq_timer_pending_w, dut.irq_soft_pending_w, dut.irq_ext_pending_w,
+               dut.csr_global_mie_w, dut.csr_mtie_en_w,
+               dut.irq_mtime_hi_w, dut.irq_mtime_lo_w, dut.irq_mtimecmp_hi_w, dut.irq_mtimecmp_lo_w);
+      $display("TIMEOUT_STATE regs ra=0x%08x sp=0x%08x t0=0x%08x t1=0x%08x t2=0x%08x s0=0x%08x a0=0x%08x",
+               dut.u_id.u_rf.rf[1], dut.u_id.u_rf.rf[2], dut.u_id.u_rf.rf[5],
+               dut.u_id.u_rf.rf[6], dut.u_id.u_rf.rf[7], dut.u_id.u_rf.rf[8],
+               dut.u_id.u_rf.rf[10]);
+      if (USE_MIG != 0) begin
+        $display("TIMEOUT_STATE l2_state=%0d app en/rdy=%0d/%0d cmd=%0d addr=0x%08x rd_valid=%0d",
+                 mig_l2_state_dbg,
+                 mig_app_en_dbg, mig_app_rdy_dbg,
+                 mig_app_cmd_dbg, mig_app_addr_dbg,
+                 mig_app_rd_valid_dbg);
+      end
+      $display("TIMEOUT_STATE dmem req=%0d we=%0d addr=0x%08x ready=%0d rvalid=%0d rdata=0x%08x err=%0d",
+               dut.dmem_req_o, dut.dmem_we_o, dut.dmem_addr_o,
+               dut.dmem_ready_i, dut.dmem_rvalid_i, dut.dmem_rdata_i,
+               dut.dmem_rsp_err_i);
       $display("TIMEOUT");
       tb_finish;
+    end
+  end
+
+  always @(posedge clk) begin
+    if (rst_n && (rtos_trap_trace != 0)) begin
+      if (dut.csr_trap_enter_q) begin
+        $display("[TRAP] cycle=%0d pc=0x%08x cause=0x%08x irq=%0d mstatus_before=0x%08x priv=%0d",
+                 cycles, dut.csr_trap_pc_q, dut.csr_trap_cause_q,
+                 dut.csr_trap_is_interrupt_q, dut.csr_mstatus_w, dut.csr_current_priv_w);
+      end
+      if (dut.csr_mret_exec_q) begin
+        $display("[MRET] cycle=%0d mepc=0x%08x mstatus_after=0x%08x priv=%0d",
+                 cycles, dut.csr_mepc_w, dut.csr_mstatus_w, dut.csr_current_priv_w);
+      end
     end
   end
 
@@ -1211,7 +1360,9 @@ module icache_pipeline_tb;
       cov_wb_commits <= cov_wb_commits + 1;
       if ((trace_en != 0) && (trace_fd != 0))
         $fdisplay(trace_fd, "%0d %0d %08x", cycles, wb_rd, wb_wdata);
-      $display("WB: x%0d <= 0x%08x", wb_rd, wb_wdata);
+`ifdef PIPE_TRACE
+        $display("WB: x%0d <= 0x%08x", wb_rd, wb_wdata);
+`endif
       if ((wb_rd == expect_rd) && (wb_wdata == expect_val)) begin
         if (require_linefill && (linefill_cnt == 0)) begin
           $display("FAIL: no I$ linefill observed");
@@ -1334,9 +1485,9 @@ module icache_pipeline_tb;
         cov_ev_iwait_and_dwbwait <= cov_ev_iwait_and_dwbwait + 1;
       if (cov_l2_state_cur == 5'd17)
         cov_ev_l2_err_rsp <= cov_ev_l2_err_rsp + 1;
-      if (USE_MIG && dut.GEN_MIG.u_l2.sel_busy && dut.GEN_MIG.u_l2.sel_is_d && mon_i_req_valid)
+      if ((USE_MIG != 0) && mig_l2_sel_busy_dbg && mig_l2_sel_is_d_dbg && mon_i_req_valid)
         cov_ev_l2_d_sel_with_i_req <= cov_ev_l2_d_sel_with_i_req + 1;
-      if (USE_MIG && dut.GEN_MIG.u_l2.sel_busy && !dut.GEN_MIG.u_l2.sel_is_d && mon_d_req_valid)
+      if ((USE_MIG != 0) && mig_l2_sel_busy_dbg && !mig_l2_sel_is_d_dbg && mon_d_req_valid)
         cov_ev_l2_i_sel_with_d_req <= cov_ev_l2_i_sel_with_d_req + 1;
     end
   end
@@ -1477,7 +1628,7 @@ module icache_pipeline_tb;
 
   // Hang watchdog: print key internal state when no WB for a long window.
   always @(posedge clk) begin
-    if (rst_n && ((cycles - last_wb_cycle) == 2000)) begin
+    if (rst_n && (rtos_uart_mon == 0) && ((cycles - last_wb_cycle) == 2000)) begin
       $display("[DBG] no WB for 2000 cycles at cycle=%0d", cycles);
       $display("[DBG] ic_l2 i_req v/r=%0d/%0d i_rsp v/r=%0d/%0d",
                mon_i_req_valid, mon_i_req_ready,
@@ -1493,7 +1644,7 @@ module icache_pipeline_tb;
                dut.if_pc, dut.if_pending, dut.stall_if, dut.stall_id, dut.stall_ex, dut.stall_exmem);
       $display("[DBG] fetch_req v/r=%0d/%0d fetch_rsp v/r=%0d/%0d req_blocked=%0d resp_blocked=%0d",
                dut.fetch_req_valid, dut.fetch_req_ready,
-               dut.fetch_resp_valid, dut.fetch_resp_ready,
+               dut.fetch_resp_valid, dut.fetch_resp_if_ready,
                dut.req_blocked, dut.resp_blocked);
       $display("[DBG] redirect=%0d fetch_kill=%0d ex_valid=%0d ex_pc=0x%08x",
                dut.redirect_valid, dut.fetch_req_kill, dut.ex_valid, dut.ex_pc);
@@ -1513,6 +1664,17 @@ module icache_pipeline_tb;
                dut.u_icache.u_icache.drop_resp);
       $display("[DBG] mem_stall=%0d dmem_req=%0d dcache_req_ready=%0d dcache_rsp_valid=%0d",
                dut.mem_stall, dut.dmem_req_o, dut.dcache_cpu_req_ready, dut.dcache_cpu_rsp_valid);
+      if (USE_MIG) begin
+        $display("[DBG] l2_state=%0d mig_beat=%0d app en/rdy=%0d/%0d cmd=%0d addr=0x%08x rd_valid=%0d init=%0d ui_rst=%0d memtest_active=%0d",
+                 dut.GEN_MIG.u_l2.u_core.state,
+                 dut.GEN_MIG.u_l2.u_core.mig_beat_cnt,
+                 dut.GEN_MIG.app_en, dut.GEN_MIG.app_rdy,
+                 dut.GEN_MIG.app_cmd, dut.GEN_MIG.app_addr,
+                 dut.GEN_MIG.app_rd_data_valid,
+                 dut.init_calib_complete,
+                 dut.ui_clk_sync_rst,
+                 dut.GEN_MIG.memtest_active_w);
+      end
 `endif
 `endif
     end
@@ -1527,7 +1689,7 @@ module icache_pipeline_tb;
                cycles, dut.if_pc, dut.if_pending,
                dut.stall_if, dut.stall_id, dut.stall_ex,
                dut.fetch_req_valid, dut.fetch_req_ready,
-               dut.fetch_resp_valid, dut.fetch_resp_ready,
+               dut.fetch_resp_valid, dut.fetch_resp_if_ready,
                dut.id_valid, dut.id_pc);
       $display("[DBGIC] cyc=%0d ic_state=%0d s1_v=%0d s1_pc=%08x s2_v=%0d s2_pc=%08x acc=%0d if_resp_v/r=%0d/%0d",
                cycles, dut.u_icache.u_icache.state,
@@ -1560,7 +1722,7 @@ endmodule
 
 // ----------------------------------------------------------------------------
 // Simplified MIG model for simulation (used by MIG_DDR2_interface wrapper).
-// - app_addr is 16-byte aligned address (addr[31:4])
+// - app_addr is a byte-domain offset from DDR base, aligned to 16 bytes
 // - app_cmd: 3'b001 read, 3'b000 write
 // - app_wdf_mask: 1=mask (no write), 0=write
 // - Fixed 2-cycle read latency, always-ready interface
@@ -1767,7 +1929,7 @@ module mig_7series_0_mig (
 
   // Use sys_clk_i as UI clock
   assign ui_clk = sys_clk_i;
-  assign init_calib_complete = ~sys_rst;
+  assign init_calib_complete = sys_rst;
 
   initial begin
     // Wait one tick so top TB can finish its own TEST/MEMFILE selection.
@@ -1919,7 +2081,7 @@ module mig_7series_0_mig (
     integer i;
     reg [31:0] base;
     begin
-      base = {a16, 4'b0};
+      base = a16;
       for (i = 0; i < 16; i = i + 1)
         rd128[i*8 +: 8] = mem_b[base + i];
     end
@@ -1932,7 +2094,7 @@ module mig_7series_0_mig (
     integer i;
     reg [31:0] base;
     begin
-      base = {a16, 4'b0};
+      base = a16;
       for (i = 0; i < 16; i = i + 1) begin
         if (!mask[i])
           mem_b[base + i] = data[i*8 +: 8];
@@ -1943,8 +2105,8 @@ module mig_7series_0_mig (
   reg [26:0] rd_addr_d0, rd_addr_d1;
   reg        rd_valid_d0, rd_valid_d1;
 
-  always @(posedge ui_clk or posedge sys_rst) begin
-    if (sys_rst) begin
+  always @(posedge ui_clk or negedge sys_rst) begin
+    if (!sys_rst) begin
       app_rdy          <= 1'b0;
       app_wdf_rdy      <= 1'b0;
       app_rd_data_valid<= 1'b0;

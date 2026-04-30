@@ -33,8 +33,8 @@ module regfile (
 
 endmodule
 
-// id_stage.v -- RV32I ID stage (decode + immgen + control)
-// Verilog-2001; no compressed ISA, no CSR control path here.
+// id_stage.v -- RV32I/RV32M ID stage (decode + immgen + control)
+// Verilog-2001; no compressed ISA. Includes base CSR/system decode.
 module id_stage (
   input         clk,
   input         rst_n,
@@ -44,6 +44,7 @@ module id_stage (
   input  [31:0] id_instr_i,
   input         id_valid_i,
   input         id_stall_i,
+  input  [1:0]  current_priv_i,
 
   // From WB stage (writeback to regfile)
   input         wb_we_i,
@@ -73,7 +74,14 @@ module id_stage (
   output        id_shift_arith_o,
   output        id_is_auipc_o,
   output        id_is_lui_o,
-  output [2:0]  id_mem_funct3_o
+  output [2:0]  id_mem_funct3_o,
+  output        id_csr_en_o,
+  output [2:0]  id_csr_cmd_o,
+  output [11:0] id_csr_addr_o,
+  output        id_ecall_o,
+  output        id_ebreak_o,
+  output        id_mret_o,
+  output        id_illegal_o
 );
 
   // -------- Instruction fields --------
@@ -86,13 +94,27 @@ module id_stage (
 
   reg shift_right, shift_arith, is_auipc, is_lui;
   reg [2:0] mem_f3;
+  reg       csr_en;
+  reg [2:0] csr_cmd;
+  reg       csr_use_zimm;
+  reg       is_ecall;
+  reg       is_ebreak;
+  reg       is_mret;
+  reg       illegal_instr;
 
   assign id_mem_funct3_o = mem_f3;
   assign id_shift_right_o  = shift_right;
   assign id_shift_arith_o  = shift_arith;
   assign id_is_auipc_o     = is_auipc;
   assign id_is_lui_o       = is_lui;
-  assign rs1_o = rs1;
+  assign id_csr_en_o       = csr_en;
+  assign id_csr_cmd_o      = csr_cmd;
+  assign id_csr_addr_o     = id_instr_i[31:20];
+  assign id_ecall_o        = is_ecall;
+  assign id_ebreak_o       = is_ebreak;
+  assign id_mret_o         = is_mret;
+  assign id_illegal_o      = illegal_instr;
+  assign rs1_o = csr_use_zimm ? 5'd0 : rs1;
   assign rs2_o = rs2;
   assign rd_o  = rd;
   assign br_funct3_o = funct3;
@@ -108,6 +130,7 @@ module id_stage (
   localparam [6:0] OP_STORE  = 7'b0100011;
   localparam [6:0] OP_OPIMM  = 7'b0010011;
   localparam [6:0] OP_OP     = 7'b0110011;
+  localparam [6:0] OP_MISC_MEM = 7'b0001111; // FENCE/FENCE.I
   localparam [6:0] OP_SYSTEM = 7'b1110011; // (ecall/ebreak/csrr*)
 
   // -------- ALU op encoding (4-bit) --------
@@ -132,6 +155,35 @@ module id_stage (
   localparam [1:0] WB_ALU = 2'b00; // ALU result
   localparam [1:0] WB_MEM = 2'b01; // Memory read data
   localparam [1:0] WB_PC4 = 2'b10; // PC+4 (JAL/JALR)
+
+  // -------- CSR command encoding --------
+  localparam [2:0] CSR_CMD_NONE = 3'b000;
+  localparam [2:0] CSR_CMD_W    = 3'b001;
+  localparam [2:0] CSR_CMD_S    = 3'b010;
+  localparam [2:0] CSR_CMD_C    = 3'b011;
+  localparam [1:0] PRIV_U       = 2'b00;
+  localparam [1:0] PRIV_M       = 2'b11;
+
+  // Minimal supported machine CSRs
+  wire csr_addr_supported = (id_instr_i[31:20] == 12'h300) || // mstatus
+                            (id_instr_i[31:20] == 12'h304) || // mie
+                            (id_instr_i[31:20] == 12'h305) || // mtvec
+                            (id_instr_i[31:20] == 12'h340) || // mscratch
+                            (id_instr_i[31:20] == 12'h341) || // mepc
+                            (id_instr_i[31:20] == 12'h342) || // mcause
+                            (id_instr_i[31:20] == 12'h344) || // mip
+                            (id_instr_i[31:20] == 12'hF14);   // mhartid, read-only, hart 0
+  wire [1:0] csr_required_priv = id_instr_i[29:28];
+  wire csr_priv_ok = (current_priv_i >= csr_required_priv);
+  wire csr_is_read_only = (id_instr_i[31:30] == 2'b11);
+  wire csr_imm_form = funct3[2];
+  wire csr_w_op = (funct3 == 3'b001) || (funct3 == 3'b101);
+  wire csr_s_op = (funct3 == 3'b010) || (funct3 == 3'b110);
+  wire csr_c_op = (funct3 == 3'b011) || (funct3 == 3'b111);
+  wire [4:0] csr_zimm = id_instr_i[19:15];
+  wire [4:0] csr_write_operand = csr_imm_form ? csr_zimm : rs1;
+  wire csr_would_write = csr_w_op ||
+                         ((csr_s_op || csr_c_op) && (csr_write_operand != 5'd0));
 
   // -------- Immediate generation --------
   reg [31:0] imm;
@@ -177,6 +229,13 @@ module id_stage (
     is_auipc    = 1'b0;
     is_lui      = 1'b0;
     mem_f3      = 3'b010; // default LW
+    csr_en      = 1'b0;
+    csr_cmd     = CSR_CMD_NONE;
+    csr_use_zimm= 1'b0;
+    is_ecall    = 1'b0;
+    is_ebreak   = 1'b0;
+    is_mret     = 1'b0;
+    illegal_instr = 1'b0;
 
     case (opcode)
       OP_LUI: begin
@@ -203,29 +262,54 @@ module id_stage (
       end
       OP_JALR: begin
         imm         = imm_i;
-        jalr        = 1'b1;
-        wb_sel      = WB_PC4;
-        reg_write   = 1'b1;
+        if (funct3 == 3'b000) begin
+          jalr        = 1'b1;
+          wb_sel      = WB_PC4;
+          reg_write   = 1'b1;
+        end else begin
+          illegal_instr = 1'b1;
+        end
       end
       OP_BRANCH: begin
         imm         = imm_b;
-        branch      = 1'b1;        // EX compares via funct3
+        case (funct3)
+          3'b000, 3'b001, 3'b100, 3'b101, 3'b110, 3'b111: begin
+            branch = 1'b1;        // EX compares via funct3
+          end
+          default: begin
+            illegal_instr = 1'b1;
+          end
+        endcase
       end
       OP_LOAD: begin
         imm         = imm_i;
-        alu_op      = ALU_ADD;     // addr = rs1 + imm
-        alu_src_imm = 1'b1;
-        mem_read    = 1'b1;
-        wb_sel      = WB_MEM;      // rd <= mem_rdata
-        reg_write   = 1'b1;
-        mem_f3      = funct3;
+        case (funct3)
+          3'b000, 3'b001, 3'b010, 3'b100, 3'b101: begin
+            alu_op      = ALU_ADD;     // addr = rs1 + imm
+            alu_src_imm = 1'b1;
+            mem_read    = 1'b1;
+            wb_sel      = WB_MEM;      // rd <= mem_rdata
+            reg_write   = 1'b1;
+            mem_f3      = funct3;
+          end
+          default: begin
+            illegal_instr = 1'b1;
+          end
+        endcase
       end
       OP_STORE: begin
         imm         = imm_s;
-        alu_op      = ALU_ADD;     // addr = rs1 + imm
-        alu_src_imm = 1'b1;
-        mem_write   = 1'b1;
-        mem_f3      = funct3;
+        case (funct3)
+          3'b000, 3'b001, 3'b010: begin
+            alu_op      = ALU_ADD;     // addr = rs1 + imm
+            alu_src_imm = 1'b1;
+            mem_write   = 1'b1;
+            mem_f3      = funct3;
+          end
+          default: begin
+            illegal_instr = 1'b1;
+          end
+        endcase
       end
       OP_OPIMM: begin
         imm         = imm_i;
@@ -239,13 +323,24 @@ module id_stage (
           3'b110: alu_op = ALU_OR;    // ORI
           3'b111: alu_op = ALU_AND;   // ANDI
           3'b001: begin               // SLLI
-            alu_op      = ALU_SLL;    // use SHIFT group in EX
-            shift_right = 1'b0;       // left shift
+            if (funct7 == 7'b0000000) begin
+              alu_op      = ALU_SLL;    // use SHIFT group in EX
+              shift_right = 1'b0;       // left shift
+            end else begin
+              illegal_instr = 1'b1;
+            end
           end
           3'b101: begin               // SRLI / SRAI
-            alu_op      = ALU_SLL;
-            shift_right = 1'b1;       // right shift
-            shift_arith = id_instr_i[30]; // 0=SRLI, 1=SRAI
+            if ((funct7 == 7'b0000000) || (funct7 == 7'b0100000)) begin
+              alu_op      = ALU_SLL;
+              shift_right = 1'b1;       // right shift
+              shift_arith = id_instr_i[30]; // 0=SRLI, 1=SRAI
+            end else begin
+              illegal_instr = 1'b1;
+            end
+          end
+          default: begin
+            illegal_instr = 1'b1;
           end
         endcase
       end
@@ -270,36 +365,162 @@ module id_stage (
         else begin
           case (funct3)
       // ADD / SUB
-            3'b000: alu_op = (funct7[5] ? ALU_SUB : ALU_ADD);
+            3'b000: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_ADD;
+              end else if (funct7 == 7'b0100000) begin
+                alu_op = ALU_SUB;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
       // SLL
             3'b001: begin
-              alu_op      = ALU_SLL;
-              shift_right = 1'b0;
+              if (funct7 == 7'b0000000) begin
+                alu_op      = ALU_SLL;
+                shift_right = 1'b0;
+              end else begin
+                illegal_instr = 1'b1;
+              end
             end
       // SLT
-            3'b010: alu_op = ALU_SLT;
+            3'b010: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_SLT;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
       // SLTU
-            3'b011: alu_op = ALU_SLTU;
+            3'b011: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_SLTU;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
       // XOR
-            3'b100: alu_op = ALU_XOR;
+            3'b100: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_XOR;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
       // SRL / SRA
             3'b101: begin
-              alu_op      = ALU_SLL;
-              shift_right = 1'b1;
-              shift_arith = funct7[5]; // 0 = SRL, 1 = SRA
+              if ((funct7 == 7'b0000000) || (funct7 == 7'b0100000)) begin
+                alu_op      = ALU_SLL;
+                shift_right = 1'b1;
+                shift_arith = funct7[5]; // 0 = SRL, 1 = SRA
+              end else begin
+                illegal_instr = 1'b1;
+              end
             end
       // OR
-            3'b110: alu_op = ALU_OR;
+            3'b110: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_OR;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
       // AND
-            3'b111: alu_op = ALU_AND;
+            3'b111: begin
+              if (funct7 == 7'b0000000) begin
+                alu_op = ALU_AND;
+              end else begin
+                illegal_instr = 1'b1;
+              end
+            end
           endcase
         end
         
       end
+      OP_MISC_MEM: begin
+        case (funct3)
+          3'b000, 3'b001: begin
+            // FENCE/FENCE.I are ordering operations. This in-order core has no
+            // separate architectural action here, so decode them as legal NOPs.
+          end
+          default: begin
+            illegal_instr = 1'b1;
+          end
+        endcase
+      end
+      OP_SYSTEM: begin
+        case (funct3)
+          3'b001, 3'b101: begin
+            if (csr_addr_supported && csr_priv_ok && !(csr_is_read_only && csr_would_write)) begin
+              csr_en      = 1'b1;      // CSRRW/CSRRWI
+              csr_use_zimm= csr_imm_form;
+              csr_cmd   = CSR_CMD_W;
+              reg_write = 1'b1;
+            end else begin
+              illegal_instr = 1'b1;
+            end
+          end
+          3'b010, 3'b110: begin
+            if (csr_addr_supported && csr_priv_ok && !(csr_is_read_only && csr_would_write)) begin
+              csr_en      = 1'b1;      // CSRRS/CSRRSI
+              csr_use_zimm= csr_imm_form;
+              csr_cmd   = CSR_CMD_S;
+              reg_write = 1'b1;
+            end else begin
+              illegal_instr = 1'b1;
+            end
+          end
+          3'b011, 3'b111: begin
+            if (csr_addr_supported && csr_priv_ok && !(csr_is_read_only && csr_would_write)) begin
+              csr_en      = 1'b1;      // CSRRC/CSRRCI
+              csr_use_zimm= csr_imm_form;
+              csr_cmd   = CSR_CMD_C;
+              reg_write = 1'b1;
+            end else begin
+              illegal_instr = 1'b1;
+            end
+          end
+          default: begin
+            if ((id_instr_i[31:20] == 12'h000) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+              is_ecall = 1'b1;
+            end else if ((id_instr_i[31:20] == 12'h001) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+              is_ebreak = 1'b1;
+            end else if ((id_instr_i[31:20] == 12'h302) && (rs1 == 5'd0) && (rd == 5'd0) && (current_priv_i == PRIV_M)) begin
+              is_mret = 1'b1;
+            end else begin
+              illegal_instr = 1'b1;
+            end
+          end
+        endcase
+      end
       default: begin
-        // keep defaults
+        illegal_instr = 1'b1;
       end
     endcase
+
+    if (illegal_instr) begin
+      imm         = 32'b0;
+      alu_op      = ALU_ADD;
+      alu_src_imm = 1'b0;
+      branch      = 1'b0;
+      jal         = 1'b0;
+      jalr        = 1'b0;
+      mem_read    = 1'b0;
+      mem_write   = 1'b0;
+      wb_sel      = WB_ALU;
+      reg_write   = 1'b0;
+      shift_right = 1'b0;
+      shift_arith = 1'b0;
+      is_auipc    = 1'b0;
+      is_lui      = 1'b0;
+      mem_f3      = 3'b010;
+      csr_en      = 1'b0;
+      csr_cmd     = CSR_CMD_NONE;
+      csr_use_zimm= 1'b0;
+      is_ecall    = 1'b0;
+      is_ebreak   = 1'b0;
+      is_mret     = 1'b0;
+    end
   end
 
   // Pass-through ready (simple pipeline)
@@ -324,7 +545,8 @@ module id_stage (
 
   wire wb_match_rs1 = wb_we_i && (wb_rd_i != 5'd0) && (wb_rd_i == rs1);
   wire wb_match_rs2 = wb_we_i && (wb_rd_i != 5'd0) && (wb_rd_i == rs2);
-  assign rs1_val_o = wb_match_rs1 ? wb_wd_i : rs1_raw;
+  wire [31:0] rs1_bypass = wb_match_rs1 ? wb_wd_i : rs1_raw;
+  assign rs1_val_o = csr_use_zimm ? {27'b0, csr_zimm} : rs1_bypass;
   assign rs2_val_o = wb_match_rs2 ? wb_wd_i : rs2_raw;
 
 endmodule

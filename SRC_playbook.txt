@@ -1,0 +1,89 @@
+1. mstatus
+全名是 machine status。
+它像什麼？
+CPU 的狀態總開關
+裡面最重要的是：
+MIE：全域中斷開關
+MPIE：進 trap 前的中斷狀態
+MPP：進 trap 前的權限
+你可以先記最重要的一個：
+MIE
+如果 MIE = 1
+代表：
+CPU 允許 machine interrupt 進來
+如果 MIE = 0
+代表：
+就算外面有中斷，CPU 也先不要理它
+2. mie
+這是中斷 enable register。
+它像什麼？
+細項開關
+例如：
+MSIE：允不允許 software interrupt
+MTIE：允不允許 timer interrupt
+MEIE：允不允許 external interrupt
+所以 mstatus.MIE 像總開關，mie 像分項開關。
+兩個都開，某種中斷才真的能進來。
+3. mip
+這是中斷 pending register。
+它像什麼？
+有哪些中斷正在等你處理
+例如：
+MSIP：software interrupt pending
+MTIP：timer interrupt pending
+MEIP：external interrupt pending
+mie 是「可不可以」
+mip 是「有沒有發生」
+4. mtvec
+這是 trap vector。
+它像什麼？
+發生中斷或例外時，要跳去哪裡
+如果 CPU 決定要進 trap，它就會把 PC 改成 mtvec 指向的位置。
+那裡通常放你的 trap handler。
+5. mepc
+這是 exception program counter。
+它像什麼？
+記錄 trap 發生時，原本在執行哪個 PC
+等你處理完，要用 mret 回去時，就靠 mepc 回到原本程式。
+6. mcause
+它像什麼？
+trap 原因紀錄表
+例如：
+是 timer interrupt
+是非法指令
+是 load fault
+handler 可以讀 mcause，知道現在到底發生什麼事。
+7. mscratch
+它像什麼？
+給 trap handler 臨時使用的暫存空間
+這個沒有很固定的功能，通常給系統軟體自己拿來暫存東西。
+九、CSR 指令到底在做什麼？
+先看最常見三個：
+1. CSRRW
+可以想成：
+先把舊的 CSR 值讀出來，再把新值寫進去
+例如：
+csrrw x1, mstatus, x2
+意思是：
+先把 mstatus 的舊值讀出來
+寫到 x1
+再把 x2 的值寫進 mstatus
+所以：
+x1 拿到舊值
+mstatus 被更新
+2. CSRRS
+可以想成：
+讀出舊值，再把某些 bit 設成 1
+例如：
+csrrs x1, mie, x2
+意思是：
+x1 = mie 舊值
+mie = mie | x2
+3. CSRRC
+可以想成：
+讀出舊值，再把某些 bit 清成 0
+例如：
+csrrc x1, mie, x2
+意思是：
+x1 = mie 舊值
+mie = mie & ~x2

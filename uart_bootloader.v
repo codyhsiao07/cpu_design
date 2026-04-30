@@ -9,6 +9,7 @@
 module uart_bootloader #(
   parameter integer CLK_HZ    = 100_000_000,
   parameter integer BAUD      = 115_200,
+  parameter integer ENABLE_RX_AUTODETECT = 0,
   parameter [31:0] DDR_BASE   = 32'h8000_0000,
   parameter [31:0] BOOT_ADDR  = 32'h8000_0000
 ) (
@@ -345,7 +346,17 @@ module uart_bootloader #(
   wire        match_mul2_i = rx_valid_mul2_i && (sync_next_mul2_i == SYNC_WORD);
   wire        match_mul4_i = rx_valid_mul4_i && (sync_next_mul4_i == SYNC_WORD);
 
-  wire fire_send = (state == S_SEND) && app_rdy && app_wdf_rdy;
+  wire autodetect_enabled = (ENABLE_RX_AUTODETECT != 0);
+  wire sync_match = match_nom ||
+                    (autodetect_enabled &&
+                     (match_div2 || match_mul2 || match_div4 || match_mul4 ||
+                      match_nom_i || match_div2_i || match_mul2_i ||
+                      match_div4_i || match_mul4_i));
+  wire fire_send_cmd = (state == S_SEND) && send_need_cmd && app_rdy;
+  wire fire_send_wdf = (state == S_SEND) && send_need_wdf && app_wdf_rdy;
+  wire fire_send_done = (state == S_SEND) &&
+                        ((!send_need_cmd) || app_rdy) &&
+                        ((!send_need_wdf) || app_wdf_rdy);
   wire fire_verify_req = (state == S_VERIFY_REQ) &&
                          (verify_wait_cnt_q == {VERIFY_WAIT_W{1'b0}}) &&
                          app_rdy;
@@ -473,9 +484,9 @@ module uart_bootloader #(
     if (state == S_SEND) begin
       app_addr     = send_addr_q;
       app_cmd      = MIG_CMD_WRITE;
-      app_en       = app_rdy && app_wdf_rdy;
-      app_wdf_wren = app_rdy && app_wdf_rdy;
-      app_wdf_end  = app_rdy && app_wdf_rdy;
+      app_en       = send_need_cmd;
+      app_wdf_wren = send_need_wdf;
+      app_wdf_end  = send_need_wdf;
     end else if (state == S_VERIFY_REQ) begin
       app_addr     = (BOOT_ADDR - DDR_BASE) + {21'd0, verify_idx_q, 4'b0000};
       app_cmd      = MIG_CMD_READ;
@@ -592,8 +603,7 @@ module uart_bootloader #(
           if (rx_valid_mul4_i)
             sync_shift_mul4_i <= sync_next_mul4_i;
 
-          if (match_nom || match_div2 || match_mul2 || match_div4 || match_mul4 ||
-              match_nom_i || match_div2_i || match_mul2_i || match_div4_i || match_mul4_i) begin
+          if (sync_match) begin
             debug_sync_seen_o <= 1'b1;
             bytes_total <= 32'd0;
             byte_cnt    <= 32'd0;
@@ -626,7 +636,7 @@ module uart_bootloader #(
             debug_verify2_ok_q <= 1'b0;
             debug_verify_req_seen_o <= 1'b0;
             debug_verify_rsp_seen_o <= 1'b0;
-            if (match_nom)
+            if (match_nom || !autodetect_enabled)
               rx_sel <= RXSEL_NOM;
             else if (match_div2)
               rx_sel <= RXSEL_DIV2;
@@ -818,7 +828,12 @@ module uart_bootloader #(
             rx_fifo_count_q <= rx_fifo_count_q + 1'b1;
           end
 
-          if (fire_send) begin
+          if (fire_send_cmd)
+            send_need_cmd <= 1'b0;
+          if (fire_send_wdf)
+            send_need_wdf <= 1'b0;
+
+          if (fire_send_done) begin
             idle_cnt <= {TIMEOUT_W{1'b0}};
             send_need_cmd <= 1'b0;
             send_need_wdf <= 1'b0;
@@ -833,6 +848,8 @@ module uart_bootloader #(
               buf_mask <= 16'hFFFF;
               state <= S_DATA;
             end
+          end else if (fire_send_cmd || fire_send_wdf) begin
+            idle_cnt <= {TIMEOUT_W{1'b0}};
           end else if (sel_valid && !rx_fifo_full) begin
             idle_cnt <= {TIMEOUT_W{1'b0}};
           end else if (idle_cnt == TIMEOUT_CYCLES - 1) begin

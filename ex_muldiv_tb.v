@@ -26,6 +26,8 @@ module ex_muldiv_tb;
   reg ex_shift_arith_i;
   reg ex_is_auipc_i;
   reg ex_is_lui_i;
+  reg ex_csr_en_i;
+  reg [31:0] ex_csr_rdata_i;
 
   wire ex_stall_o;
   wire [31:0] ex_alu_result_o;
@@ -57,6 +59,8 @@ module ex_muldiv_tb;
     .ex_shift_arith_i(ex_shift_arith_i),
     .ex_is_auipc_i(ex_is_auipc_i),
     .ex_is_lui_i(ex_is_lui_i),
+    .ex_csr_en_i(ex_csr_en_i),
+    .ex_csr_rdata_i(ex_csr_rdata_i),
     .ex_stall_o(ex_stall_o),
     .ex_alu_result_o(ex_alu_result_o),
     .ex_store_data_o(ex_store_data_o),
@@ -194,6 +198,8 @@ module ex_muldiv_tb;
       ex_shift_arith_i = 1'b0;
       ex_is_auipc_i = 1'b0;
       ex_is_lui_i = 1'b0;
+      ex_csr_en_i = 1'b0;
+      ex_csr_rdata_i = 32'b0;
     end
   endtask
 

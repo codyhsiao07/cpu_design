@@ -146,7 +146,7 @@ module mem_stage (
   end
 
   // -------------------- request outputs --------------------
-`ifndef SYNTHESIS
+`ifdef PIPE_TRACE
   always @(posedge clk) begin
     if (mem_valid_i) begin
       $display("[%0t] MEM_STAGE INPUT mem_read=%0d mem_write=%0d addr=0x%08x stall=%0d",
@@ -212,7 +212,7 @@ module mem_stage (
   // -------------------- stall --------------------
   assign mem_stall_o = busy_q | new_req;
 
-`ifndef SYNTHESIS
+`ifdef PIPE_TRACE
   // Debug prints to trace MEM transactions and responses during simulation
   always @(posedge clk) begin
     if (new_req) begin

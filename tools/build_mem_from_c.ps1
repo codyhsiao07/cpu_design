@@ -4,6 +4,8 @@ param(
   [string]$BuildDir = "build_rv32",
   [string]$Linker = "tools/link_ddr.ld",
   [string]$Crt0 = "tools/crt0.S",
+  [string[]]$ExtraSources = @(),
+  [string]$Arch = "rv32im_zicsr",
   [string]$ToolchainBin = "C:\\riscv\\xpack-riscv-none-elf-gcc\\bin"
 )
 
@@ -22,6 +24,7 @@ if (Test-Path $ToolchainBin) {
 }
 
 $gcc = Find-Tool @(
+  "riscv-none-elf-gcc",
   "riscv32-unknown-elf-gcc",
   "riscv64-unknown-elf-gcc",
   "riscv32-elf-gcc",
@@ -29,6 +32,7 @@ $gcc = Find-Tool @(
 )
 
 $objcopy = Find-Tool @(
+  "riscv-none-elf-objcopy",
   "riscv32-unknown-elf-objcopy",
   "riscv64-unknown-elf-objcopy",
   "riscv32-elf-objcopy",
@@ -48,22 +52,35 @@ if ([string]::IsNullOrWhiteSpace($stem)) {
 $elf = Join-Path $BuildDir ("{0}.elf" -f $stem)
 $bin = Join-Path $BuildDir ("{0}.bin" -f $stem)
 
+$sourceList = @($Crt0)
+if ($ExtraSources) {
+  $sourceList += $ExtraSources
+}
+$sourceList += $Source
+
 $gccArgs = @(
-  "-march=rv32im",
+  "-march=$Arch",
   "-mabi=ilp32",
   "-ffreestanding",
   "-nostdlib",
   "-O2",
   "-Wl,-T,$Linker",
-  "-o", $elf,
-  $Crt0,
-  $Source
-)
+  "-o", $elf
+) + $sourceList
 
 & $gcc @gccArgs
+if ($LASTEXITCODE -ne 0) {
+  throw "gcc failed"
+}
 
 & $objcopy -O binary $elf $bin
+if ($LASTEXITCODE -ne 0) {
+  throw "objcopy failed"
+}
 
 & python tools/bin_to_mem.py $bin $OutMem
+if ($LASTEXITCODE -ne 0) {
+  throw "bin_to_mem failed"
+}
 
 Write-Output "Done: $OutMem"

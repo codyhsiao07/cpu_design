@@ -10,13 +10,13 @@ SECTIONS
   . = ORIGIN(DDR);
 
   .text : {
-    *(.text.start)
+    KEEP(*(.text.start))
     *(.text*)
-    *(.traptext)
     *(.rodata*)
   } > DDR
 
   .data : {
+    . = ALIGN(4);
     __global_pointer$ = . + 0x800;
     *(.sdata*)
     *(.data*)

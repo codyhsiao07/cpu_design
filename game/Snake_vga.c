@@ -1,5 +1,6 @@
 #include "games_shared_ui.h"
 #include "vga_fb.h"
+#include "Snake_vga.h"
 #if defined(LAUNCHER_SOFT_MENU_BUTTON)
 #include "launcher_jump.h"
 #endif
@@ -690,7 +691,7 @@ static void advance_snake(void)
     need_redraw = 1;
 }
 
-static int handle_input(int ch)
+int snake_game_handle_input_char(int ch)
 {
     ch = ui_to_lower(ch);
 
@@ -727,7 +728,7 @@ static int handle_input(int ch)
     return 0;
 }
 
-int main(void)
+void snake_game_init(void)
 {
     ui_clear_screen();
     ui_puts("VGA Snake demo (160x120 framebuffer)\n");
@@ -738,6 +739,57 @@ int main(void)
     vga_fb_clear(COLOR_BG);
     vga_fb_present();
     start_new_game();
+}
+
+void snake_game_update_tick(void)
+{
+    if (game_state == STATE_PLAY) {
+        step_counter++;
+        if (step_counter >= speed_ticks) {
+            step_counter = 0u;
+            advance_snake();
+        }
+    }
+}
+
+void snake_game_render_if_needed(void)
+{
+    if (need_redraw) {
+        render_scene();
+    }
+}
+
+void snake_game_shutdown(void)
+{
+    vga_fb_set_draw_buffer(0u);
+    vga_fb_clear(0u);
+    vga_fb_present();
+}
+
+unsigned int snake_game_score(void)
+{
+    return score;
+}
+
+unsigned int snake_game_length(void)
+{
+    return snake_len;
+}
+
+unsigned int snake_game_speed_ticks(void)
+{
+    return speed_ticks;
+}
+
+unsigned int snake_game_state(void)
+{
+    return game_state;
+}
+
+#if !defined(SNAKE_NO_STANDALONE_MAIN)
+int main(void)
+{
+    snake_game_init();
 
     while (1) {
         int ch = ui_read_byte_nonblocking();
@@ -750,29 +802,19 @@ int main(void)
 #endif
 
         if (ch >= 0) {
-            if (handle_input(ch) < 0) {
+            if (snake_game_handle_input_char(ch) < 0) {
                 ui_puts("\nBye.\n");
                 break;
             }
         }
 
-        if (game_state == STATE_PLAY) {
-            step_counter++;
-            if (step_counter >= speed_ticks) {
-                step_counter = 0u;
-                advance_snake();
-            }
-        }
-
-        if (need_redraw) {
-            render_scene();
-        }
+        snake_game_update_tick();
+        snake_game_render_if_needed();
 
         ui_short_pause(POLL_SPIN);
     }
 
-    vga_fb_set_draw_buffer(0u);
-    vga_fb_clear(0u);
-    vga_fb_present();
+    snake_game_shutdown();
     return 0;
 }
+#endif

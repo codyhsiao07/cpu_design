@@ -151,8 +151,10 @@ module i_cache
     assign hit0 = s2_valid && s2_v0 && (s2_tag0 == s2_req_tag);
     assign hit1 = s2_valid && s2_v1 && (s2_tag1 == s2_req_tag);
     assign hit  = hit0 || hit1;
+    wire       kill_edge = if_req_kill && !kill_prev;
+    wire [7:0] kill_toggle_effective = kill_toggle + (kill_edge ? 8'd1 : 8'd0);
     wire drop_resp;
-    assign drop_resp = (s2_kill_tag != kill_toggle); // kill happened after accept 
+    assign drop_resp = (s2_kill_tag != kill_toggle_effective); // kill happened after accept
    //這筆 S2 的 request 是在「舊 epoch」被接受的；若之後發生過 kill（epoch 改變），就把它的 response 丟掉，避免舊路徑指令送進 decode。
     // ----------------------------
     // Miss / refill state machine
@@ -254,7 +256,7 @@ module i_cache
 
             // kill toggle edge detect
             kill_prev <= if_req_kill;
-            if (if_req_kill && !kill_prev) begin
+            if (kill_edge) begin
                 kill_toggle <= kill_toggle + 8'd1;
                 if_resp_valid <= 1'b0;
                 // Drop queued response from the old control-flow epoch.
@@ -444,7 +446,7 @@ module i_cache
                             refill_err_q <= 1'b1;
                         if (miss_uncached) begin
                             // UC_READ: use low 32 bits
-                            if (!((miss_kill_tag) != kill_toggle)) begin
+                            if (!((miss_kill_tag) != kill_toggle_effective)) begin
                                 if_resp_valid <= 1'b1;
                                 if_resp_pc    <= miss_pc;
                                 if_resp_inst  <= l2_rsp_data[31:0];
@@ -517,7 +519,7 @@ module i_cache
                 ST_REPLAY2: begin
                     // should hit after refill
                     if (hit) begin
-                        if (!((s2_kill_tag) != kill_toggle)) begin
+                        if (!((s2_kill_tag) != kill_toggle_effective)) begin
                             if_resp_valid <= 1'b1;
                             if_resp_pc    <= s2_pc;
                             if_resp_err   <= refill_err_q;
@@ -565,9 +567,6 @@ module i_cache
     end
 
 endmodule
-
-
-
 
 
 
