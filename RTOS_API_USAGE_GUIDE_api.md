@@ -339,6 +339,51 @@ if (handle == NULL) {
 }
 ```
 
+補充：`worker_stack` 和 `worker_tcb` 建立後由誰使用：
+
+```text
+worker_stack -> 傳給 puxStackBuffer，給 FreeRTOS 當這個 task 的 stack 使用
+worker_tcb   -> 傳給 pxTaskBuffer，給 FreeRTOS 當這個 task 的 TCB 使用
+handle       -> xTaskCreateStatic() 回傳給 application，用來操作這個 task
+```
+
+`StackType_t` 不需要 application 自己定義。它由目前使用的 FreeRTOS CPU port 定義，通常來自 `portmacro.h`。application 只要 include：
+
+```c
+#include "FreeRTOS.h"
+#include "task.h"
+```
+
+`TASK_STACK_WORDS` 的單位是 `StackType_t` word，不是 byte。例如 `StackType_t` 若是 32-bit，`384u` 就代表 `384 * 4 = 1536` bytes 的 stack 空間。
+
+呼叫 `xTaskCreateStatic()` 成功後，`worker_stack` 和 `worker_tcb` 就交給 FreeRTOS 管理，application 不應該再直接讀寫或清除它們。
+
+不要這樣做：
+
+```c
+worker_stack[0] = 123;                         /* 不要 */
+memset(worker_stack, 0, sizeof(worker_stack)); /* 不要 */
+
+memset(&worker_tcb, 0, sizeof(worker_tcb));    /* 不要 */
+```
+
+原因是 `worker_stack` 會存放 task 執行時的 call stack、local variable、return address、暫存 register 與 context switch 狀態；`worker_tcb` 則是 FreeRTOS scheduler 管理 task 狀態、priority、stack pointer 等資料用的結構。任意修改這兩塊記憶體可能造成 task crash、跳到錯誤位址、排程異常，或產生難以追蹤的 bug。
+
+建立成功後，application 應該透過 `handle` 操作 task，例如：
+
+```c
+vTaskSuspend(handle);
+vTaskResume(handle);
+```
+
+如果要觀察 stack 是否足夠，可以使用：
+
+```c
+UBaseType_t words_left = uxTaskGetStackHighWaterMark(handle);
+```
+
+這裡回傳的 `words_left` 單位同樣是 `StackType_t` word，不是 byte。
+
 使用注意事項：
 
 - task stack 和 TCB 不能放在會消失的區域變數中。`main()` 執行到 `vTaskStartScheduler()` 後，這些 storage 仍然要有效。
@@ -803,6 +848,155 @@ if (event_queue == NULL) {
     rtos_uart_write_line("[APP] queue create failed");
     for (;;) {}
 }
+```
+
+補充：`xQueueCreateStatic()` 相關物件由誰使用：
+
+```text
+event_queue_storage -> 傳給 pucQueueStorageBuffer，給 FreeRTOS 存放 queue item
+event_queue_tcb     -> 傳給 pxQueueBuffer，給 FreeRTOS 管理 queue 狀態
+event_queue         -> xQueueCreateStatic() 回傳給 application，用來操作這條 queue
+```
+
+和 static task 很像，storage/control block 是 application 先準備好，再交給 FreeRTOS 使用；handle 則是 application 後續呼叫 API 時使用。
+
+重要觀念：`event_queue_storage` 不是「某一次要傳送的資料地址」。它是 queue 內部的倉庫，FreeRTOS 用它暫存多筆 queue item。
+
+```c
+typedef struct {
+    uint32_t id;
+    uint32_t value;
+} AppEvent_t;
+
+static AppEvent_t event_queue_storage[EVENT_QUEUE_LENGTH];
+```
+
+上面這段代表這條 queue 的每一筆資料格式是 `AppEvent_t`，而且 `event_queue_storage[]` 最多可以暫存 `EVENT_QUEUE_LENGTH` 筆 `AppEvent_t`。
+
+真正要送資料時，要另外準備一筆實際資料，然後用 `xQueueSend()` 傳送：
+
+```c
+AppEvent_t event;
+
+event.id = 1u;
+event.value = 123u;
+
+xQueueSend(event_queue, &event, portMAX_DELAY);
+```
+
+這裡的 `&event` 才是「這次要送的那一筆資料地址」。FreeRTOS 會依照建立 queue 時設定的 `uxItemSize`，把 `event` 的內容複製進 `event_queue_storage` 裡。
+
+接收資料時也一樣，要準備一個接收用的變數：
+
+```c
+AppEvent_t received;
+
+xQueueReceive(event_queue, &received, portMAX_DELAY);
+```
+
+這裡的 `&received` 是「這次接收資料要放到哪裡」。FreeRTOS 會從 `event_queue_storage` 裡取出一筆 item，複製到 `received`。
+
+可以這樣記：
+
+```text
+AppEvent_t                  -> 定義每筆資料長什麼樣
+event_queue_storage[]       -> queue 內部倉庫，可放多筆 AppEvent_t
+event                       -> 這次要送的一筆 AppEvent_t
+&event                      -> 這次要送進 queue 的資料地址
+received                    -> 這次要接收的一筆 AppEvent_t
+&received                   -> 這次接收資料要存放的地址
+xQueueSend(..., &event, ...)     -> 把 event 複製進 queue
+xQueueReceive(..., &received, ...) -> 從 queue 複製一筆資料到 received
+```
+
+```text
+task:
+worker_stack -> 給 FreeRTOS 用
+worker_tcb   -> 給 FreeRTOS 用
+handle       -> application 用
+
+queue:
+queue_storage -> 給 FreeRTOS 用
+queue_tcb     -> 給 FreeRTOS 用
+event_queue   -> application 用，也就是 QueueHandle_t 變數
+```
+
+`xQueueCreateStatic()` 不一定要放在 `xTaskCreateStatic()` 後面。比較常見、也比較安全的初始化順序是：
+
+```text
+1. 建立 queue
+2. 建立 task
+3. 呼叫 vTaskStartScheduler()
+```
+
+原因是 task 開始執行後可能立刻使用 queue，所以 queue 最好在 task 被 scheduler 排程前就已經建立完成。實務上通常會在 `main()` 或初始化函式中先呼叫 `xQueueCreateStatic()`，確認回傳值不是 `NULL` 後，再建立 producer/consumer task。
+
+哪個 task 可以使用某條 queue，不是由 FreeRTOS 權限設定決定，而是看那個 task 的程式碼能不能取得 `QueueHandle_t`。誰拿得到 queue handle，誰就可以呼叫：
+
+```c
+xQueueSend(event_queue, &event, portMAX_DELAY);
+xQueueReceive(event_queue, &event, portMAX_DELAY);
+```
+
+`event_queue` 的使用流程如下：
+
+```c
+static QueueHandle_t event_queue;
+```
+
+這行只是宣告一個 queue handle 變數。真正建立 queue 時，`xQueueCreateStatic()` 會回傳代表這條 queue 的 handle：
+
+```c
+event_queue = xQueueCreateStatic(
+    EVENT_QUEUE_LENGTH,
+    sizeof(AppEvent_t),
+    (uint8_t *)event_queue_storage,
+    &event_queue_tcb
+);
+```
+
+建立成功後，task 之後要操作這條 queue，就把 `event_queue` 當成第一個參數傳給 queue API：
+
+```c
+xQueueSend(event_queue, &event, portMAX_DELAY);
+xQueueReceive(event_queue, &event, portMAX_DELAY);
+```
+
+所以 `event_queue` 是 application 用來指定「我要操作哪一條 queue」的代號。它的角色類似 task 的 `TaskHandle_t handle`：
+
+```text
+TaskHandle_t handle       -> 給 vTaskSuspend(handle)、vTaskResume(handle) 用
+QueueHandle_t event_queue -> 給 xQueueSend(event_queue)、xQueueReceive(event_queue) 用
+```
+
+常見做法有兩種：
+
+```text
+1. 把 QueueHandle_t 宣告成 static/global，讓需要的 task 看得到。
+2. 透過 xTaskCreateStatic() 的第 4 個參數 pvParameters，把 queue handle 傳給指定 task。
+```
+
+如果希望設計清楚，可以讓 producer task 只呼叫 `xQueueSend()`，consumer task 只呼叫 `xQueueReceive()`，其他 task 不要取得這條 queue 的 handle。
+
+FreeRTOS 自帶型別整理：
+
+| 型別 | 來源 | 用途 |
+| ---- | ---- | ---- |
+| `StackType_t` | FreeRTOS port | task stack 陣列的元素型別。 |
+| `StaticTask_t` | FreeRTOS | static task 的 TCB storage 型別。 |
+| `TaskHandle_t` | FreeRTOS | task handle，application 用來操作 task。 |
+| `QueueHandle_t` | FreeRTOS | queue handle，application 用來操作 queue。 |
+| `StaticQueue_t` | FreeRTOS | static queue 的 control block storage 型別。 |
+| `BaseType_t` | FreeRTOS port | FreeRTOS API 常用的回傳值或狀態型別，例如 `pdPASS`。 |
+| `UBaseType_t` | FreeRTOS port | FreeRTOS API 常用的 unsigned 整數型別，例如 priority、queue length。 |
+| `TickType_t` | FreeRTOS port/config | RTOS tick 數值型別，例如 timeout 或 delay。 |
+
+這些型別都不需要 application 自己定義。使用 task 和 queue 時通常 include：
+
+```c
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
 ```
 
 queue 的作用可以理解成 task 之間傳資料用的 FIFO 通道：
