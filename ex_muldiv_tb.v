@@ -45,6 +45,7 @@ module ex_muldiv_tb;
     .clk(clk),
     .rst_n(rst_n),
     .ex_valid_i(ex_valid_i),
+    .ex_pipe_hold_i(1'b0),
     .ex_pc_i(ex_pc_i),
     .ex_rs1_val_i(ex_rs1_val_i),
     .ex_rs2_val_i(ex_rs2_val_i),

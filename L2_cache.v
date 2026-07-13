@@ -123,6 +123,25 @@ module l2_cache_core
         end
     endfunction
 
+    function [511:0] merge_beat64;
+        input [511:0] line;
+        input [2:0]   beat;
+        input [63:0]  data;
+        input [7:0]   strb;
+        reg [511:0]   merged;
+        integer       byte_i;
+        integer       bit_base;
+        begin
+            merged = line;
+            bit_base = beat * 64;
+            for (byte_i = 0; byte_i < 8; byte_i = byte_i + 1) begin
+                if (strb[byte_i])
+                    merged[bit_base + byte_i*8 +: 8] = data[byte_i*8 +: 8];
+            end
+            merge_beat64 = merged;
+        end
+    endfunction
+
     // -------- Decode / latch --------
     reg [1:0]   cmd_r;
     reg [31:0]  addr_r;
@@ -213,6 +232,8 @@ module l2_cache_core
     // WB_LINE receive buffer
     reg [2:0]   wb_beat_cnt;//L2 從「上游（D$）」接收一整條 cache line 時，目前收到了第幾個 64-bit beat
     reg [511:0] wb_buf;
+    reg         mig_wr_cmd_done;
+    reg         mig_wr_data_done;
 
     // victim line temp
     reg [511:0] victim_line_buf;
@@ -230,6 +251,11 @@ module l2_cache_core
     // MIG control constants (set according to MIG config)
     localparam [2:0] MIG_CMD_READ  = 3'b001;
     localparam [2:0] MIG_CMD_WRITE = 3'b000;
+
+    wire mig_wr_cmd_fire  = app_en && app_rdy;
+    wire mig_wr_data_fire = app_wdf_wren && app_wdf_rdy;
+    wire mig_wr_beat_done = (mig_wr_cmd_done || mig_wr_cmd_fire) &&
+                            (mig_wr_data_done || mig_wr_data_fire);
 
     // MIG address translation: native app_addr is byte-domain for this x16 DDR2 MIG.
     function [26:0] pa_to_app_addr16;
@@ -309,9 +335,9 @@ module l2_cache_core
         // Eviction write (miss)
         if (state == S_MISS_EVICT) begin
             app_cmd  = MIG_CMD_WRITE;
-            app_en   = app_rdy && app_wdf_rdy;
-            app_wdf_wren = app_rdy && app_wdf_rdy;
-            app_wdf_end  = (mig_beat_cnt == 2'd3) && (app_rdy && app_wdf_rdy);
+            app_en   = !mig_wr_cmd_done;
+            app_wdf_wren = !mig_wr_data_done;
+            app_wdf_end  = !mig_wr_data_done;
             app_wdf_mask = 16'h0000;
             begin : BLK_MISS_EVICT_ADDR
                 reg [31:0] victim_pa;
@@ -326,7 +352,7 @@ module l2_cache_core
         // Refill read: issue one read at a time
         if (state == S_MISS_REFILL) begin
             app_cmd = MIG_CMD_READ;
-            app_en  = app_rdy;
+            app_en  = 1'b1;
             begin : BLK_REFILL_ADDR
                 reg [31:0] pa0;
                 pa0 = line_addr_r + { {28{1'b0}}, mig_beat_cnt, 4'b0 };
@@ -337,9 +363,9 @@ module l2_cache_core
         // WB victim eviction
         if (state == S_WB_EVICT) begin
             app_cmd  = MIG_CMD_WRITE;
-            app_en   = app_rdy && app_wdf_rdy;
-            app_wdf_wren = app_rdy && app_wdf_rdy;
-            app_wdf_end  = (mig_beat_cnt == 2'd3) && (app_rdy && app_wdf_rdy);
+            app_en   = !mig_wr_cmd_done;
+            app_wdf_wren = !mig_wr_data_done;
+            app_wdf_end  = !mig_wr_data_done;
             app_wdf_mask = 16'h0000;
             begin : BLK_WB_EVICT_ADDR
                 reg [31:0] victim_pa;
@@ -354,7 +380,7 @@ module l2_cache_core
         // UC read issue (1 read)
         if (state == S_UC_RD_REQ) begin
             app_cmd = MIG_CMD_READ;
-            app_en  = app_rdy;
+            app_en  = 1'b1;
             begin : BLK_UC_RD_ADDR
                 reg [31:0] pa16;
                 pa16 = {addr_eff[31:4], 4'b0};
@@ -365,9 +391,9 @@ module l2_cache_core
         // UC write issue (1 write, byte mask)
         if (state == S_UC_WR_REQ) begin
             app_cmd = MIG_CMD_WRITE;
-            app_en  = app_rdy && app_wdf_rdy;
-            app_wdf_wren = app_rdy && app_wdf_rdy;
-            app_wdf_end  = app_rdy && app_wdf_rdy;
+            app_en  = !mig_wr_cmd_done;
+            app_wdf_wren = !mig_wr_data_done;
+            app_wdf_end  = !mig_wr_data_done;
             begin : BLK_UC_WR
                 reg [31:0] pa16;
                 reg [127:0] wdf;
@@ -398,6 +424,8 @@ module l2_cache_core
             rsp_beat_cnt <= 3'd0;
             mig_beat_cnt <= 2'd0;
             wb_beat_cnt  <= 3'd0;
+            mig_wr_cmd_done  <= 1'b0;
+            mig_wr_data_done <= 1'b0;
 
             cmd_r   <= 2'b0;
             addr_r  <= 32'd0;
@@ -444,11 +472,41 @@ module l2_cache_core
                     if (!addr_legal || !req_len_ok) begin
                         state <= S_ERR_RSP;
                     end else if ((cmd_r == CMD_LINE_RD) && unc_eff) begin
-                        state <= S_UC_RD_REQ;
+                        if (hit) begin
+                            uc_rdata_buf <= get_beat64(hit0 ? data0_mem[index_r] : data1_mem[index_r],
+                                                       addr_eff[5:3]);
+                            if (hit0) plru_mem[index_r] <= 1'b1;
+                            else      plru_mem[index_r] <= 1'b0;
+                            state <= S_UC_RD_RSP;
+                        end else begin
+                            state <= S_UC_RD_REQ;
+                        end
                     end else begin
                         if (cmd_r == CMD_UC_RD) begin
-                            state <= S_UC_RD_REQ;
+                            if (hit) begin
+                                uc_rdata_buf <= get_beat64(hit0 ? data0_mem[index_r] : data1_mem[index_r],
+                                                           addr_eff[5:3]);
+                                if (hit0) plru_mem[index_r] <= 1'b1;
+                                else      plru_mem[index_r] <= 1'b0;
+                                state <= S_UC_RD_RSP;
+                            end else begin
+                                state <= S_UC_RD_REQ;
+                            end
                         end else if (cmd_r == CMD_UC_WR) begin
+                            // A bypass write must also update a resident cache line.
+                            if (hit0) begin
+                                data0_mem[index_r] <= merge_beat64(data0_mem[index_r],
+                                                                  addr_eff[5:3], wdata_r, wstrb_r);
+                                dir0_mem[index_r] <= 1'b1;
+                                plru_mem[index_r] <= 1'b1;
+                            end else if (hit1) begin
+                                data1_mem[index_r] <= merge_beat64(data1_mem[index_r],
+                                                                  addr_eff[5:3], wdata_r, wstrb_r);
+                                dir1_mem[index_r] <= 1'b1;
+                                plru_mem[index_r] <= 1'b0;
+                            end
+                            mig_wr_cmd_done  <= 1'b0;
+                            mig_wr_data_done <= 1'b0;
                             state <= S_UC_WR_REQ;
                         end else if (cmd_r == CMD_WB_LINE) begin
                             // Capture the first beat (already accepted in S_IDLE)
@@ -478,6 +536,8 @@ module l2_cache_core
                                 install_way_buf  <= victim_way_w;
                                 evict_needed_buf <= victim_valid_w && victim_dirty_w;
                                 mig_beat_cnt <= 2'd0;
+                                mig_wr_cmd_done  <= 1'b0;
+                                mig_wr_data_done <= 1'b0;
 
                                 if (victim_valid_w && victim_dirty_w) state <= S_MISS_EVICT;
                                 else                                  state <= S_MISS_REFILL;
@@ -500,7 +560,13 @@ module l2_cache_core
 
                 // ---------------- MISS eviction: 4 beats @128b write ----------------
                 S_MISS_EVICT: begin
-                    if (app_rdy && app_wdf_rdy) begin
+                    if (mig_wr_cmd_fire)
+                        mig_wr_cmd_done <= 1'b1;
+                    if (mig_wr_data_fire)
+                        mig_wr_data_done <= 1'b1;
+                    if (mig_wr_beat_done) begin
+                        mig_wr_cmd_done  <= 1'b0;
+                        mig_wr_data_done <= 1'b0;
                         if (mig_beat_cnt == 2'd3) begin
                             mig_beat_cnt <= 2'd0;
                             state <= S_MISS_REFILL;
@@ -582,6 +648,8 @@ module l2_cache_core
                                 install_way_buf  <= victim_way_w;
                                 evict_needed_buf <= victim_valid_w && victim_dirty_w;
                                 mig_beat_cnt <= 2'd0;
+                                mig_wr_cmd_done  <= 1'b0;
+                                mig_wr_data_done <= 1'b0;
                                 if (victim_valid_w && victim_dirty_w) state <= S_WB_EVICT;
                                 else                                  state <= S_WB_INSTALL;
                             end
@@ -594,7 +662,13 @@ module l2_cache_core
 
                 // writeback victim before installing WB line
                 S_WB_EVICT: begin
-                    if (app_rdy && app_wdf_rdy) begin
+                    if (mig_wr_cmd_fire)
+                        mig_wr_cmd_done <= 1'b1;
+                    if (mig_wr_data_fire)
+                        mig_wr_data_done <= 1'b1;
+                    if (mig_wr_beat_done) begin
+                        mig_wr_cmd_done  <= 1'b0;
+                        mig_wr_data_done <= 1'b0;
                         if (mig_beat_cnt == 2'd3) begin
                             mig_beat_cnt <= 2'd0;
                             state <= S_WB_INSTALL;
@@ -648,7 +722,13 @@ module l2_cache_core
                 end
 
                 S_UC_WR_REQ: begin
-                    if (app_rdy && app_wdf_rdy) begin
+                    if (mig_wr_cmd_fire)
+                        mig_wr_cmd_done <= 1'b1;
+                    if (mig_wr_data_fire)
+                        mig_wr_data_done <= 1'b1;
+                    if (mig_wr_beat_done) begin
+                        mig_wr_cmd_done  <= 1'b0;
+                        mig_wr_data_done <= 1'b0;
                         state <= S_UC_WR_RSP;
                     end
                 end
@@ -674,4 +754,3 @@ module l2_cache_core
     end
 
 endmodule
-

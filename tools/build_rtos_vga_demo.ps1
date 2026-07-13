@@ -3,7 +3,8 @@ param(
   [string]$BuildDir = "build_rtos",
   [string]$OutName = "rtos_vga_demo",
   [string]$ToolchainBin = "C:\riscv\xpack-riscv-none-elf-gcc\bin",
-  [string]$Arch = "rv32im_zicsr"
+  [string]$Arch = "rv32im_zicsr",
+  [uint32]$CpuClockHz = 50000000
 )
 
 $ErrorActionPreference = "Stop"
@@ -80,6 +81,7 @@ $sources = @(
 
 $gccArgs = @(
   "-march=$Arch",
+  "-DconfigCPU_CLOCK_HZ=$($CpuClockHz)UL",
   "-mabi=ilp32",
   "-mno-relax",
   "-ffreestanding",

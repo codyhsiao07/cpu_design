@@ -251,7 +251,8 @@ module icache_tb;
             $fatal(1, "Timeout waiting for if_resp_valid");
           end
         end
-        if (if_resp_inst !== exp_data) begin
+        // Instruction data is not architecturally valid on an error response.
+        if (!expect_err && (if_resp_inst !== exp_data)) begin
           $fatal(1, "Data mismatch: addr=%h exp=%h got=%h", addr, exp_data, if_resp_inst);
         end
         if (if_resp_err !== expect_err) begin

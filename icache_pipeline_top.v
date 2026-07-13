@@ -196,6 +196,7 @@ module icache_pipeline_top #(
   reg [LAUNCHER_BTN_DEBOUNCE_W-1:0] launcher_reset_db_cnt_q;
   reg [LAUNCHER_RESET_ARM_W-1:0] launcher_reset_arm_cnt_q;
   reg [LAUNCHER_RESET_W-1:0] launcher_reset_cnt_q;
+  (* SHREG_EXTRACT = "NO" *) reg [1:0] core_reset_sync_q = 2'b00;
   wire        boot_word0_ok_int;
   wire        boot_word1_ok_int;
   wire        boot_word2_ok_int;
@@ -228,7 +229,19 @@ module icache_pipeline_top #(
   wire [3:0]  vga_green_w;
   wire [3:0]  vga_blue_w;
 
-  assign core_rst_n = core_rst_n_base & ~launcher_reset_active_q;
+  // Assert/release the core reset on core_clk.  This keeps calibration and
+  // launcher combinational logic away from thousands of asynchronous reset
+  // pins and guarantees a clean two-cycle release.
+  always @(posedge core_clk) begin
+    if (!rst_n)
+      core_reset_sync_q <= 2'b00;
+    else if (!core_rst_n_base || launcher_reset_active_q)
+      core_reset_sync_q <= 2'b00;
+    else
+      core_reset_sync_q <= {core_reset_sync_q[0], 1'b1};
+  end
+
+  assign core_rst_n = core_reset_sync_q[1];
   assign core_rst = ~core_rst_n;
   assign boot_edge_seen_int = boot_edge_seen_boot_int | boot_ui_edge_seen_q;
   assign boot_ui_reset_released_w = ~ui_clk_sync_rst & init_calib_complete;
@@ -1221,6 +1234,7 @@ module icache_pipeline_top #(
   wire        sync_trap_valid;
   wire [31:0] sync_trap_cause;
   wire [31:0] sync_trap_pc;
+  wire [31:0] sync_trap_tval;
   wire        ex_sync_trap;
   wire        ex_mret_fire = ex_valid & ~stall_ex & ex_mret;
   wire [31:0] ex_trap_cause;
@@ -1232,6 +1246,7 @@ module icache_pipeline_top #(
   reg         csr_trap_is_interrupt_q;
   reg  [31:0] csr_trap_pc_q;
   reg  [31:0] csr_trap_cause_q;
+  reg  [31:0] csr_trap_tval_q;
   reg         csr_mret_exec_q;
   reg  [31:0] irq_arch_pc_q;
   reg         irq_mem_pc_suppress_q;
@@ -1245,8 +1260,9 @@ module icache_pipeline_top #(
   wire        csr_exec_write_en = ex_valid & ex_csr_en & ~stall_ex;
   wire        ex_irq_pc_commit = ex_valid & ~stall_ex & ~ex_insn_misaligned &
                                  (ex_jal | ex_jalr | ex_br_taken);
-  wire        mem_irq_pc_commit = mem_valid & ~mem_stall & ~mem_sync_trap &
-                                  (~mem_mem_read | mem_load_valid);
+  wire        mem_irq_pc_commit = mem_valid & ~mem_sync_trap &
+                                  ((mem_mem_read & mem_load_valid) |
+                                   (~mem_mem_read & ~mem_stall));
 
   wire [31:0] ex_rs1_val_fwd, ex_rs2_val_fwd;
   forward_unit u_fwd (
@@ -1273,6 +1289,7 @@ module icache_pipeline_top #(
     .clk               (core_clk),
     .rst_n             (core_rst_n),
     .ex_valid_i        (ex_valid),
+    .ex_pipe_hold_i    (mem_stall),
     .ex_pc_i           (ex_pc),
     .ex_rs1_val_i      (ex_rs1_val_fwd),
     .ex_rs2_val_i      (ex_rs2_val_fwd),
@@ -1329,6 +1346,11 @@ module icache_pipeline_top #(
                            (ex_sync_trap ? ex_trap_cause : 32'd1);
   assign sync_trap_pc = mem_sync_trap ? mem_trap_pc :
                         (ex_sync_trap ? ex_pc : fetch_resp_pc);
+  assign sync_trap_tval = mem_sync_trap ? mem_alu_result :
+                          (ex_sync_trap ?
+                            (ex_insn_misaligned ? ex_redirect_pc_raw :
+                             ((ex_load_misaligned | ex_store_misaligned) ? ex_alu_result : 32'b0)) :
+                            fetch_resp_pc);
   assign irq_take_effective = irq_take_now & ~sync_trap_valid & ~ex_mret_fire;
   assign sys_flush_now = sync_trap_valid | irq_take_effective | ex_mret_fire;
 
@@ -1340,6 +1362,7 @@ module icache_pipeline_top #(
       csr_trap_is_interrupt_q <= 1'b0;
       csr_trap_pc_q           <= 32'b0;
       csr_trap_cause_q        <= 32'b0;
+      csr_trap_tval_q         <= 32'b0;
       csr_mret_exec_q         <= 1'b0;
       irq_redirect_settle_q   <= 2'b00;
       irq_arch_pc_q           <= RESET_PC;
@@ -1351,6 +1374,7 @@ module icache_pipeline_top #(
       csr_trap_is_interrupt_q <= 1'b0;
       csr_trap_pc_q           <= 32'b0;
       csr_trap_cause_q        <= 32'b0;
+      csr_trap_tval_q         <= 32'b0;
       csr_mret_exec_q         <= 1'b0;
       irq_mem_pc_suppress_q   <= ex_irq_pc_commit | ex_mret_fire;
 
@@ -1378,6 +1402,7 @@ module icache_pipeline_top #(
         csr_trap_is_interrupt_q <= irq_take_effective;
         csr_trap_pc_q           <= sync_trap_valid ? sync_trap_pc : irq_trap_pc;
         csr_trap_cause_q        <= sync_trap_valid ? sync_trap_cause : irq_cause_w;
+        csr_trap_tval_q         <= sync_trap_valid ? sync_trap_tval : 32'b0;
       end else if (ex_mret_fire) begin
         ex_sys_redirect_valid_q <= 1'b1;
         ex_sys_redirect_pc_q    <= ex_mret_vector;
@@ -1398,6 +1423,7 @@ module icache_pipeline_top #(
     .trap_is_interrupt (csr_trap_is_interrupt_q),
     .trap_pc           (csr_trap_pc_q),
     .trap_cause        (csr_trap_cause_q),
+    .trap_tval         (csr_trap_tval_q),
     .mret_exec         (csr_mret_exec_q),
     .ext_irq_pending   (irq_ext_pending_w),
     .timer_irq_pending (irq_timer_pending_w),
@@ -2049,6 +2075,13 @@ module ddr_app_memtest #(
   reg [2:0] state_q;
   reg [WAIT_W-1:0] wait_cnt_q;
   reg [1:0] test_idx_q;
+  reg       wr_need_cmd_q;
+  reg       wr_need_data_q;
+
+  wire wr_cmd_fire  = wr_need_cmd_q && app_rdy;
+  wire wr_data_fire = wr_need_data_q && app_wdf_rdy;
+  wire wr_req_done  = (!wr_need_cmd_q || wr_cmd_fire) &&
+                      (!wr_need_data_q || wr_data_fire);
 
   function [127:0] test_wdata;
     input [1:0] idx;
@@ -2074,13 +2107,13 @@ module ddr_app_memtest #(
     case (state_q)
       S_WR_REQ: begin
         app_cmd      = MIG_CMD_WRITE;
-        app_en       = app_rdy && app_wdf_rdy;
-        app_wdf_wren = app_rdy && app_wdf_rdy;
-        app_wdf_end  = app_rdy && app_wdf_rdy;
+        app_en       = wr_need_cmd_q;
+        app_wdf_wren = wr_need_data_q;
+        app_wdf_end  = wr_need_data_q;
       end
       S_RD_REQ: begin
         app_cmd      = MIG_CMD_READ;
-        app_en       = app_rdy;
+        app_en       = 1'b1;
       end
       default: begin
       end
@@ -2092,6 +2125,8 @@ module ddr_app_memtest #(
       state_q    <= S_IDLE;
       wait_cnt_q <= {WAIT_W{1'b0}};
       test_idx_q <= 2'd0;
+      wr_need_cmd_q  <= 1'b0;
+      wr_need_data_q <= 1'b0;
       done_o     <= 1'b0;
       pass_o     <= 1'b0;
       rd_seen_o  <= 1'b0;
@@ -2111,10 +2146,18 @@ module ddr_app_memtest #(
           beat3_ok_o <= 1'b0;
           wait_cnt_q <= {WAIT_W{1'b0}};
           test_idx_q <= 2'd0;
+          wr_need_cmd_q  <= 1'b1;
+          wr_need_data_q <= 1'b1;
           state_q    <= S_WR_REQ;
         end
         S_WR_REQ: begin
-          if (app_rdy && app_wdf_rdy) begin
+          if (wr_cmd_fire)
+            wr_need_cmd_q <= 1'b0;
+          if (wr_data_fire)
+            wr_need_data_q <= 1'b0;
+          if (wr_req_done) begin
+            wr_need_cmd_q  <= 1'b0;
+            wr_need_data_q <= 1'b0;
             wait_cnt_q <= WAIT_CYCLES[WAIT_W-1:0];
             state_q    <= S_WR_WAIT;
           end
@@ -2127,6 +2170,8 @@ module ddr_app_memtest #(
             state_q <= S_RD_REQ;
           end else begin
             test_idx_q <= test_idx_q + 1'b1;
+            wr_need_cmd_q  <= 1'b1;
+            wr_need_data_q <= 1'b1;
             state_q <= S_WR_REQ;
           end
         end

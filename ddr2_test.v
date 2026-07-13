@@ -175,6 +175,7 @@ module ddr2_test_top (
     reg [2:0] state;
     reg pass_r, fail_r;
     reg [15:0] wait_cnt;
+    reg wr_cmd_done_r, wr_data_done_r;
 
     // LED0: calib_done
     // LED1: PASS
@@ -201,15 +202,16 @@ module ddr2_test_top (
             pass_r       <= 1'b0;
             fail_r       <= 1'b0;
             wait_cnt     <= 16'd0;
+            wr_cmd_done_r  <= 1'b0;
+            wr_data_done_r <= 1'b0;
         end else begin
-            app_en       <= 1'b0;
-            app_wdf_wren <= 1'b0;
-            app_wdf_end  <= 1'b0;
-
             case (state)
                 S_RST: begin
                     pass_r <= 1'b0;
                     fail_r <= 1'b0;
+                    app_en       <= 1'b0;
+                    app_wdf_wren <= 1'b0;
+                    app_wdf_end  <= 1'b0;
                     state  <= S_WAITCAL;
                 end
 
@@ -219,15 +221,30 @@ module ddr2_test_top (
                         app_cmd      <= MIG_CMD_WRITE;
                         app_wdf_data <= TEST_WDATA;
                         app_wdf_mask <= 16'h0000;
+                        app_en       <= 1'b1;
+                        app_wdf_wren <= 1'b1;
+                        app_wdf_end  <= 1'b1;
+                        wr_cmd_done_r  <= 1'b0;
+                        wr_data_done_r <= 1'b0;
                         state        <= S_WR_REQ;
                     end
                 end
 
                 S_WR_REQ: begin
-                    if (app_rdy && app_wdf_rdy) begin
-                        app_en       <= 1'b1;
-                        app_wdf_wren <= 1'b1;
-                        app_wdf_end  <= 1'b1;
+                    if (app_en && app_rdy) begin
+                        app_en <= 1'b0;
+                        wr_cmd_done_r <= 1'b1;
+                    end
+                    if (app_wdf_wren && app_wdf_rdy) begin
+                        app_wdf_wren <= 1'b0;
+                        app_wdf_end  <= 1'b0;
+                        wr_data_done_r <= 1'b1;
+                    end
+                    if ((wr_cmd_done_r || (app_en && app_rdy)) &&
+                        (wr_data_done_r || (app_wdf_wren && app_wdf_rdy))) begin
+                        app_en       <= 1'b0;
+                        app_wdf_wren <= 1'b0;
+                        app_wdf_end  <= 1'b0;
                         wait_cnt     <= WR2RD_WAIT;
                         state        <= S_WR_WAIT;
                     end
@@ -239,13 +256,14 @@ module ddr2_test_top (
                     end else begin
                         app_addr <= TEST_ADDR;
                         app_cmd  <= MIG_CMD_READ;
+                        app_en   <= 1'b1;
                         state    <= S_RD_REQ;
                     end
                 end
 
                 S_RD_REQ: begin
-                    if (app_rdy) begin
-                        app_en <= 1'b1;
+                    if (app_en && app_rdy) begin
+                        app_en <= 1'b0;
                         state  <= S_RD_WAIT;
                     end
                 end

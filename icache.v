@@ -470,7 +470,19 @@ module i_cache
 
                             if (l2_rsp_last) begin
                                 l2_rsp_ready <= 1'b0;
-                                state <= ST_WRITE_LINE;
+                                if (refill_err_q || l2_rsp_err) begin
+                                    // Never make a failed refill resident.  A
+                                    // later fetch must retry the L2 transaction.
+                                    if (!((miss_kill_tag) != kill_toggle_effective)) begin
+                                        if_resp_valid <= 1'b1;
+                                        if_resp_pc    <= miss_pc;
+                                        if_resp_inst  <= 32'h0000_0013;
+                                        if_resp_err   <= 1'b1;
+                                    end
+                                    state <= ST_IDLE;
+                                end else begin
+                                    state <= ST_WRITE_LINE;
+                                end
                             end else begin
                                 refill_beat_cnt <= refill_beat_cnt + 4'd1;
                             end
@@ -567,7 +579,6 @@ module i_cache
     end
 
 endmodule
-
 
 
 

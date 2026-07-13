@@ -9,6 +9,7 @@ module ex_stage (
   input clk,
   input rst_n,
   input ex_valid_i,
+  input ex_pipe_hold_i,
   // From ID/EX register
   input  [31:0] ex_pc_i,
   input  [31:0] ex_rs1_val_i,
@@ -91,6 +92,7 @@ module ex_stage (
   wire        mul_done;
   wire [31:0] mul_result;
   reg mul_started;
+  reg mul_completed;
 
   booth_multiplier u_mul (
     .clk      (clk),
@@ -107,14 +109,23 @@ module ex_stage (
   );
   
   always @(posedge clk or negedge rst_n) begin
-    if(!rst_n)
+    if(!rst_n) begin
       mul_started <= 1'b0;
-    else if(!ex_valid_i || !is_mul)
+      mul_completed <= 1'b0;
+    end else if(!ex_valid_i || !is_mul) begin
       mul_started <= 1'b0;
-    else if(mul_done)
+      mul_completed <= 1'b0;
+    end else if(mul_done) begin
       mul_started <= 1'b0;
-    else if(mul_start)
+      // Remember completion only while the downstream pipeline holds
+      // this instruction. Otherwise it advances on this edge.
+      mul_completed <= ex_pipe_hold_i;
+    end else if(mul_start) begin
       mul_started <= 1'b1;
+      mul_completed <= 1'b0;
+    end else if(mul_completed && !ex_pipe_hold_i) begin
+      mul_completed <= 1'b0;
+    end
   end
   
   wire        div_start;
@@ -123,6 +134,7 @@ module ex_stage (
   wire [31:0] div_quotient;
   wire [31:0] div_remainder;
   reg div_started;
+  reg div_completed;
   
   restoring_divider u_div (
     .clk         (clk),
@@ -138,19 +150,28 @@ module ex_stage (
   );
   
   always @(posedge clk or negedge rst_n) begin
-    if(!rst_n)
+    if(!rst_n) begin
       div_started <= 1'b0;
-    else if(!ex_valid_i || !(is_div || is_rem))
+      div_completed <= 1'b0;
+    end else if(!ex_valid_i || !(is_div || is_rem)) begin
       div_started <= 1'b0;
-    else if(div_done)
+      div_completed <= 1'b0;
+    end else if(div_done) begin
       div_started <= 1'b0;
-    else if(div_start)
+      div_completed <= ex_pipe_hold_i;
+    end else if(div_start) begin
       div_started <= 1'b1;
+      div_completed <= 1'b0;
+    end else if(div_completed && !ex_pipe_hold_i) begin
+      div_completed <= 1'b0;
+    end
   end
   
-  assign mul_start = ex_valid_i && is_mul && !mul_started && !mul_busy;
-  assign div_start = ex_valid_i && (is_div || is_rem) && !div_started && !div_busy;
-  assign ex_stall_o = ex_valid_i && ((is_mul && !mul_done) || ((is_div || is_rem) && !div_done));
+  assign mul_start = ex_valid_i && is_mul && !mul_started && !mul_completed && !mul_busy;
+  assign div_start = ex_valid_i && (is_div || is_rem) && !div_started && !div_completed && !div_busy;
+  assign ex_stall_o = ex_valid_i &&
+                      ((is_mul && !(mul_done || mul_completed)) ||
+                       ((is_div || is_rem) && !(div_done || div_completed)));
   
   reg [31:0] alu_res;
   reg [31:0] ex_result_r;

@@ -26,11 +26,18 @@ module vga_subsystem #(
     localparam [31:0] FB_CTRL_ADDR    = FB_BASE_ADDR + 32'h0000_7FFC;
     localparam [12:0] FB_BUFFER_WORDS = 13'd4096;
 
-    (* ram_style = "block" *) reg [31:0] fb_mem [0:FB_WORDS-1];
+    // Two 16-bit banks map cleanly onto byte-write true dual-port BRAMs.
+    // CPU port A accesses both banks as one 32-bit word; VGA port B selects
+    // the required 16-bit pixel pair after the synchronous read.
+    (* ram_style = "block" *) reg [15:0] fb_lo_mem [0:FB_WORDS-1];
+    (* ram_style = "block" *) reg [15:0] fb_hi_mem [0:FB_WORDS-1];
 
     reg        cpu_rsp_valid_q = 1'b0;
     reg [31:0] cpu_rsp_rdata_q = 32'd0;
     reg        cpu_rsp_err_q   = 1'b0;
+    reg        cpu_read_pending_q = 1'b0;
+    reg [15:0] cpu_fb_lo_q;
+    reg [15:0] cpu_fb_hi_q;
     reg        front_buf_sel_cpu_q = 1'b0;
     reg        front_buf_sel_seen_meta_q = 1'b0;
     reg        front_buf_sel_seen_q = 1'b0;
@@ -48,7 +55,8 @@ module vga_subsystem #(
     wire [9:0] vc;
     wire [12:0] vga_word_addr;
     wire [12:0] vga_mem_word_addr;
-    reg  [31:0] vga_word_q;
+    reg  [15:0] vga_lo_q;
+    reg  [15:0] vga_hi_q;
     reg         vga_half_sel_q = 1'b0;
     wire [15:0] vga_word_data;
 
@@ -56,33 +64,21 @@ module vga_subsystem #(
     assign cpu_ctrl_sel = (cpu_req_addr[31:2] == FB_CTRL_ADDR[31:2]);
     assign cpu_byte_offset = cpu_req_addr - FB_BASE_ADDR;
     assign cpu_word_addr = cpu_byte_offset[14:2];
-    assign cpu_req_ready = cpu_req_valid;
+    assign cpu_req_ready = cpu_req_valid && !cpu_read_pending_q && !cpu_rsp_valid_q;
     assign cpu_rsp_valid = cpu_rsp_valid_q;
     assign cpu_rsp_rdata = cpu_rsp_rdata_q;
     assign cpu_rsp_err   = cpu_rsp_err_q;
     assign vga_mem_word_addr =
         (front_buf_sel_vga_q ? FB_BUFFER_WORDS : 13'd0) + {1'b0, vga_word_addr[12:1]};
 
+    // CPU-side RAM port and buffer-control register share one process.  This
+    // avoids multiple drivers and matches a standard true dual-port BRAM shape.
     always @(posedge cpu_clk) begin
-        if (cpu_req_valid && cpu_addr_hit && cpu_req_we) begin
-            if (cpu_ctrl_sel) begin
-                if (cpu_req_wstrb != 4'd0) begin
-                    front_buf_sel_cpu_q <= cpu_req_wdata[0];
-                end
-            end else begin
-                if (cpu_req_wstrb[0]) fb_mem[cpu_word_addr][7:0]   <= cpu_req_wdata[7:0];
-                if (cpu_req_wstrb[1]) fb_mem[cpu_word_addr][15:8]  <= cpu_req_wdata[15:8];
-                if (cpu_req_wstrb[2]) fb_mem[cpu_word_addr][23:16] <= cpu_req_wdata[23:16];
-                if (cpu_req_wstrb[3]) fb_mem[cpu_word_addr][31:24] <= cpu_req_wdata[31:24];
-            end
-        end
-    end
-
-    always @(posedge cpu_clk or negedge rst_n) begin
         if (!rst_n) begin
             cpu_rsp_valid_q <= 1'b0;
             cpu_rsp_rdata_q <= 32'd0;
             cpu_rsp_err_q   <= 1'b0;
+            cpu_read_pending_q <= 1'b0;
             front_buf_sel_cpu_q <= 1'b0;
             front_buf_sel_seen_meta_q <= 1'b0;
             front_buf_sel_seen_q <= 1'b0;
@@ -90,18 +86,44 @@ module vga_subsystem #(
             front_buf_sel_seen_meta_q <= front_buf_sel_vga_q;
             front_buf_sel_seen_q <= front_buf_sel_seen_meta_q;
             cpu_rsp_valid_q <= 1'b0;
-            if (cpu_req_valid) begin
+
+            if (cpu_read_pending_q) begin
                 cpu_rsp_valid_q <= 1'b1;
-                cpu_rsp_err_q   <= ~cpu_addr_hit;
-                cpu_rsp_rdata_q <=
-                    cpu_addr_hit ?
-                        (cpu_ctrl_sel ? {30'd0, front_buf_sel_cpu_q, front_buf_sel_seen_q} : fb_mem[cpu_word_addr]) :
-                        32'd0;
+                cpu_rsp_err_q   <= 1'b0;
+                cpu_rsp_rdata_q <= {cpu_fb_hi_q, cpu_fb_lo_q};
+                cpu_read_pending_q <= 1'b0;
+            end
+
+            if (cpu_req_ready && cpu_addr_hit && cpu_req_we) begin
+                if (cpu_ctrl_sel) begin
+                    if (cpu_req_wstrb != 4'd0)
+                        front_buf_sel_cpu_q <= cpu_req_wdata[0];
+                end else begin
+                    if (cpu_req_wstrb[0]) fb_lo_mem[cpu_word_addr][7:0]  <= cpu_req_wdata[7:0];
+                    if (cpu_req_wstrb[1]) fb_lo_mem[cpu_word_addr][15:8] <= cpu_req_wdata[15:8];
+                    if (cpu_req_wstrb[2]) fb_hi_mem[cpu_word_addr][7:0]  <= cpu_req_wdata[23:16];
+                    if (cpu_req_wstrb[3]) fb_hi_mem[cpu_word_addr][15:8] <= cpu_req_wdata[31:24];
+                end
+            end
+
+            if (cpu_req_ready) begin
+                if (cpu_addr_hit && !cpu_ctrl_sel && !cpu_req_we) begin
+                    // Dedicated output registers are required for BRAM
+                    // inference with byte write enables.
+                    cpu_fb_lo_q <= fb_lo_mem[cpu_word_addr];
+                    cpu_fb_hi_q <= fb_hi_mem[cpu_word_addr];
+                    cpu_read_pending_q <= 1'b1;
+                end else begin
+                    cpu_rsp_valid_q <= 1'b1;
+                    cpu_rsp_err_q   <= ~cpu_addr_hit;
+                    cpu_rsp_rdata_q <= (cpu_addr_hit && cpu_ctrl_sel) ?
+                                        {30'd0, front_buf_sel_cpu_q, front_buf_sel_seen_q} : 32'd0;
+                end
             end
         end
     end
 
-    always @(posedge clk25 or negedge rst_n) begin
+    always @(posedge clk25) begin
         if (!rst_n) begin
             front_buf_sel_vga_meta_q <= 1'b0;
             front_buf_sel_vga_req_q  <= 1'b0;
@@ -135,15 +157,17 @@ module vga_subsystem #(
 
     always @(posedge clk25) begin
         if (!rst_n) begin
-            vga_word_q <= 32'd0;
+            vga_lo_q <= 16'd0;
+            vga_hi_q <= 16'd0;
             vga_half_sel_q <= 1'b0;
         end else begin
-            vga_word_q <= fb_mem[vga_mem_word_addr];
+            vga_lo_q <= fb_lo_mem[vga_mem_word_addr];
+            vga_hi_q <= fb_hi_mem[vga_mem_word_addr];
             vga_half_sel_q <= vga_word_addr[0];
         end
     end
 
-    assign vga_word_data = vga_half_sel_q ? vga_word_q[31:16] : vga_word_q[15:0];
+    assign vga_word_data = vga_half_sel_q ? vga_hi_q : vga_lo_q;
 
     vga_initials u_vga_render (
         .vidon    (vidon),

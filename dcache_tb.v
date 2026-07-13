@@ -798,7 +798,11 @@ module dcache_tb;
       if (l2_rsp_valid) begin
         if (l2_rsp_ready) begin
           l2_rsp_valid <= 1'b0;
-          if (rsp_type == 2'b00) begin
+          // An error response terminates the transaction immediately.  Do not
+          // leave the remaining LINE_RD beats pending for the next request.
+          if (rsp_err_latched) begin
+            pending_rsp <= 1'b0;
+          end else if (rsp_type == 2'b00) begin
             if (rsp_beat == 3'd7) begin
               pending_rsp <= 1'b0;
             end else begin
@@ -818,7 +822,7 @@ module dcache_tb;
           case (rsp_type)
             2'b00: begin // line
               l2_rsp_rdata <= make_beat64(rsp_addr, rsp_beat);
-              l2_rsp_last  <= (rsp_beat == 3'd7);
+              l2_rsp_last  <= rsp_err_latched || (rsp_beat == 3'd7);
             end
             2'b01: begin // uc read
               l2_rsp_rdata <= uc_read_data(rsp_addr, mem_read_word(rsp_addr));
@@ -884,7 +888,8 @@ module dcache_tb;
         trace_dump();
         $fatal(1, "Err mismatch: addr=%h exp=%b got=%b", addr, exp_err, cpu_rsp_err);
       end
-      if (cpu_rsp_rdata !== exp_data) begin
+      // Read data is not architecturally valid when the response reports an error.
+      if (!exp_err && (cpu_rsp_rdata !== exp_data)) begin
         trace_dump();
         $fatal(1, "Data mismatch: addr=%h exp=%h got=%h", addr, exp_data, cpu_rsp_rdata);
       end
@@ -940,7 +945,7 @@ module dcache_tb;
         $fatal(1, "cpu_rsp_valid should hold while ready is low");
       if (cpu_rsp_err !== exp_err)
         $fatal(1, "Err mismatch (bp): addr=%h exp=%b got=%b", addr, exp_err, cpu_rsp_err);
-      if (cpu_rsp_rdata !== exp_data)
+      if (!exp_err && (cpu_rsp_rdata !== exp_data))
         $fatal(1, "Data mismatch (bp): addr=%h exp=%h got=%h", addr, exp_data, cpu_rsp_rdata);
       cpu_rsp_ready <= 1'b1;
       @(posedge clk);
@@ -1298,7 +1303,7 @@ module dcache_tb;
     l2_err_once = 1'b1;
     do_store(32'h0001_A000, 32'h0BAD_F00D, 4'hF, 1'b1, 1'b1);
 
-    // Test 17: multi-word dirty line writeback preserves both words
+    // Test 17: dirty line writeback preserves every beat in the line
     addr_a = 32'h0000_5000;
     addr_b = addr_a + 32'h0001_0000;
     addr_c = addr_a + 32'h0002_0000;
@@ -1315,6 +1320,10 @@ module dcache_tb;
       $fatal(1, "Writeback word0 mismatch");
     if (mem_read_word(addr_a + 4) !== 32'h3333_4444)
       $fatal(1, "Writeback word1 mismatch");
+    for (i = 2; i < 16; i = i + 1) begin
+      if (mem_read_word(addr_a + (i * 4)) !== mem_ref_read_word(addr_a + (i * 4)))
+        $fatal(1, "Writeback word%0d mismatch", i);
+    end
 
     // Test 18: cpu_req_ready stays low while miss in progress
     rsp_delay_cfg = 4;

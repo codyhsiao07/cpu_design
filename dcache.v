@@ -266,9 +266,10 @@ module dcache_blocking
     assign l2_rsp_ready  = (state == S_WB_WAIT) ||
                            (state == S_REFILL_RECV) ||
                            (state == S_UC_WAIT) ||
-                           ((state == S_REFILL_REQ) && l2_req_ready) ||
-                           ((state == S_UC_REQ) && l2_req_ready) ||
-                           ((state == S_WB_STREAM) && l2_req_ready && (beat_cnt_r == 3'd7));
+                           ((state == S_REFILL_REQ) && l2_req_valid && l2_req_ready) ||
+                           ((state == S_UC_REQ) && l2_req_valid && l2_req_ready) ||
+                           ((state == S_WB_STREAM) && l2_req_valid && l2_req_ready &&
+                            (beat_cnt_r == 3'd7));
     // ---------------- Main sequential logic ----------------
     integer i;
     always @(posedge clk) begin
@@ -458,11 +459,16 @@ module dcache_blocking
                     l2_req_wdata <= line_get_beat64(wb_line_r, beat_cnt_r);
                     l2_req_wstrb <= { (BUS_W/8){1'b1} };
 
-                    if (l2_req_ready) begin
+                    if (l2_req_valid && l2_req_ready) begin
                         if (beat_cnt_r == 3'd7) begin
+                            l2_req_valid <= 1'b0;
                             state <= S_WB_WAIT;
+                        end else begin
+                            beat_cnt_r <= beat_cnt_r + 3'd1;
+                            // The registered beat on the bus was just accepted.
+                            // Present the following beat during the next cycle.
+                            l2_req_wdata <= line_get_beat64(wb_line_r, beat_cnt_r + 3'd1);
                         end
-                        beat_cnt_r <= beat_cnt_r + 3'd1;
                     end
                 end
 
@@ -470,7 +476,16 @@ module dcache_blocking
                 S_WB_WAIT: begin
                     if (l2_rsp_valid && l2_rsp_ready) begin
                         wb_err_r <= l2_rsp_err;
-                        state <= S_REFILL_REQ;
+                        if (l2_rsp_err) begin
+                            // Do not replace the dirty victim when its writeback
+                            // failed; software may retry without losing the line.
+                            cpu_rsp_rdata <= {CPU_DATA_W{1'b0}};
+                            cpu_rsp_err   <= 1'b1;
+                            cpu_rsp_valid <= 1'b1;
+                            state <= S_RESP;
+                        end else begin
+                            state <= S_REFILL_REQ;
+                        end
                     end
                 end
 
@@ -484,10 +499,11 @@ module dcache_blocking
                     l2_req_wdata <= {BUS_W{1'b0}};//因為這是 讀 request，wdata/wstrb 無意義，清 0 讓波形乾淨
                     l2_req_wstrb <= {(BUS_W/8){1'b0}};
 
-                    if (l2_req_ready) begin//refill request 已被 L2 接受，接下來就可以開始等 L2 回傳資料了
+                    if (l2_req_valid && l2_req_ready) begin//refill request 已被 L2 接受，接下來就可以開始等 L2 回傳資料了
                         refill_line_r <= {LINE_BITS{1'b0}};
                         //因為從下一個 state S_REFILL_RECV 開始，你會逐拍把回來的 64-bit beat 塞進 refill_line_r：
                         //清成 0 可以避免殘留上一筆 refill 的內容beat_cnt_r=0 表示下一拍開始收的是 beat0
+                        l2_req_valid <= 1'b0;
                         beat_cnt_r <= 3'd0;
                         state <= S_REFILL_RECV;
                     end
@@ -566,7 +582,8 @@ module dcache_blocking
                         end
                     end
 
-                    if (l2_req_ready) begin
+                    if (l2_req_valid && l2_req_ready) begin
+                        l2_req_valid <= 1'b0;
                         state <= S_UC_WAIT;
                     end
                 end

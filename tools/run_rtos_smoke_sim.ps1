@@ -4,7 +4,8 @@ param(
   [string]$Iverilog = "iverilog",
   [string]$Vvp = "vvp",
   [int]$SkipBuild = 0,
-  [int]$MaxCycles = 5000000
+  [int]$MaxCycles = 5000000,
+  [uint32]$CpuClockHz = 100000000
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,8 @@ New-Item -ItemType Directory -Path $buildPath -Force | Out-Null
 if ($SkipBuild -eq 0) {
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot "tools\build_rtos_smoke.ps1") `
     -FreeRTOSRoot $FreeRTOSRoot `
-    -BuildDir $BuildDir
+    -BuildDir $BuildDir `
+    -CpuClockHz $CpuClockHz
   if ($LASTEXITCODE -ne 0) {
     throw "RTOS build failed"
   }

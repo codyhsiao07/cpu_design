@@ -155,9 +155,11 @@ module l2_arb_tb;
     reg [31:0] base_word;
     reg [31:0] beat2;
     begin
-      app_addr_base = (line_addr - DDR_BASE) >> 4;
+      // The native MIG app address is byte-domain.  Each 128-bit read command
+      // advances by 16 bytes and supplies two 64-bit L2 response beats.
+      app_addr_base = (line_addr - DDR_BASE) + ({30'd0, beat[2:1]} << 4);
       base_word = app_addr_base << 2;
-      beat2 = {29'd0, beat, 1'b0}; // beat * 2
+      beat2 = {30'd0, beat[0], 1'b0};
       exp_line_rd_beat = {base_word + beat2 + 32'd1, base_word + beat2};
     end
   endfunction
@@ -167,7 +169,7 @@ module l2_arb_tb;
     reg [31:0] app_addr_base;
     reg [31:0] base_word;
     begin
-      app_addr_base = ((addr & 32'hFFFF_FFF0) - DDR_BASE) >> 4;
+      app_addr_base = (addr & 32'hFFFF_FFF0) - DDR_BASE;
       base_word = app_addr_base << 2;
       if (addr[3]) exp_uc_rd_data = {base_word + 32'd3, base_word + 32'd2};
       else         exp_uc_rd_data = {base_word + 32'd1, base_word + 32'd0};

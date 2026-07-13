@@ -14,6 +14,7 @@ module csr_privilege_tb;
   reg trap_is_interrupt;
   reg [31:0] trap_pc;
   reg [31:0] trap_cause;
+  reg [31:0] trap_tval;
   reg mret_exec;
   reg ext_irq_pending;
   reg timer_irq_pending;
@@ -45,6 +46,7 @@ module csr_privilege_tb;
     .trap_is_interrupt(trap_is_interrupt),
     .trap_pc(trap_pc),
     .trap_cause(trap_cause),
+    .trap_tval(trap_tval),
     .mret_exec(mret_exec),
     .ext_irq_pending(ext_irq_pending),
     .timer_irq_pending(timer_irq_pending),
@@ -75,6 +77,7 @@ module csr_privilege_tb;
       trap_is_interrupt = 1'b0;
       trap_pc = 32'd0;
       trap_cause = 32'd0;
+      trap_tval = 32'd0;
       mret_exec = 1'b0;
       ext_irq_pending = 1'b0;
       timer_irq_pending = 1'b0;

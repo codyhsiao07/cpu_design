@@ -248,6 +248,10 @@ module rv32i_core_top (
   );
 
   ex_stage u_ex (
+    .clk               (clk),
+    .rst_n             (rst_n),
+    .ex_valid_i        (ex_valid),
+    .ex_pipe_hold_i    (stall_exmem),
     .ex_pc_i           (ex_pc),
     .ex_rs1_val_i      (ex_rs1_val_fwd),
     .ex_rs2_val_i      (ex_rs2_val_fwd),

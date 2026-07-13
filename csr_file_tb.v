@@ -10,6 +10,7 @@ module csr_file_tb;
   localparam [11:0] CSR_MSCRATCH = 12'h340;
   localparam [11:0] CSR_MEPC     = 12'h341;
   localparam [11:0] CSR_MCAUSE   = 12'h342;
+  localparam [11:0] CSR_MTVAL    = 12'h343;
   localparam [11:0] CSR_MIP      = 12'h344;
 
   reg clk;
@@ -24,6 +25,7 @@ module csr_file_tb;
   reg trap_is_interrupt;
   reg [31:0] trap_pc;
   reg [31:0] trap_cause;
+  reg [31:0] trap_tval;
   reg mret_exec;
   reg ext_irq_pending;
   reg timer_irq_pending;
@@ -56,6 +58,7 @@ module csr_file_tb;
     .trap_is_interrupt(trap_is_interrupt),
     .trap_pc(trap_pc),
     .trap_cause(trap_cause),
+    .trap_tval(trap_tval),
     .mret_exec(mret_exec),
     .ext_irq_pending(ext_irq_pending),
     .timer_irq_pending(timer_irq_pending),
@@ -86,6 +89,7 @@ module csr_file_tb;
       trap_is_interrupt = 1'b0;
       trap_pc = 32'b0;
       trap_cause = 32'b0;
+      trap_tval = 32'b0;
       mret_exec = 1'b0;
       ext_irq_pending = 1'b0;
       timer_irq_pending = 1'b0;
@@ -177,6 +181,9 @@ module csr_file_tb;
     apply_write(CSR_MCAUSE, CSR_CMD_W, 32'h0000_000B, 32'h0000_0000, 20);
     check_read(CSR_MCAUSE, 32'h0000_000B, 21);
 
+    apply_write(CSR_MTVAL, CSR_CMD_W, 32'h1234_ABCD, 32'h0000_0000, 35);
+    check_read(CSR_MTVAL, 32'h1234_ABCD, 36);
+
     soft_irq_pending = 1'b1;
     timer_irq_pending = 1'b1;
     ext_irq_pending = 1'b1;
@@ -195,12 +202,14 @@ module csr_file_tb;
     @(negedge clk);
     trap_pc = 32'h8000_0456;
     trap_cause = 32'd11;
+    trap_tval = 32'hDEAD_BEEF;
     trap_enter = 1'b1;
     @(negedge clk);
     trap_enter = 1'b0;
     check_read(CSR_MEPC, 32'h8000_0454, 28);
     check_read(CSR_MCAUSE, 32'h0000_000B, 29);
     check_read(CSR_MSTATUS, 32'h0000_1800, 30);
+    check_read(CSR_MTVAL, 32'hDEAD_BEEF, 37);
 
     @(negedge clk);
     mret_exec = 1'b1;
@@ -211,6 +220,7 @@ module csr_file_tb;
     @(negedge clk);
     trap_pc = 32'h8000_0500;
     trap_cause = 32'd7;
+    trap_tval = 32'hFEED_FACE;
     trap_is_interrupt = 1'b1;
     trap_enter = 1'b1;
     @(negedge clk);
@@ -219,6 +229,7 @@ module csr_file_tb;
     check_read(CSR_MEPC, 32'h8000_0500, 32);
     check_read(CSR_MCAUSE, 32'h8000_0007, 33);
     check_read(CSR_MSTATUS, 32'h0000_1800, 34);
+    check_read(CSR_MTVAL, 32'h0000_0000, 38);
 
     if (failures != 0) begin
       $display("FAIL: csr_file_tb failures=%0d", failures);

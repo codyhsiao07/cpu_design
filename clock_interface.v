@@ -21,3 +21,59 @@ module clk_wiz_0 (
   );
 
 endmodule
+
+// Self-contained implementation of the generated Clocking Wizard netlist.
+// 100 MHz board clock -> 100 MHz system clock and 200 MHz MIG reference.
+// Keeping this module in source control makes board elaboration independent
+// of a missing .xci/generated-IP directory.
+module clk_wiz_0_clk_wiz (
+  output clk_out1,
+  output clk_out2,
+  input  reset,
+  output locked,
+  input  clk_in1
+);
+  wire clk_in1_buf;
+  wire clkfb_mmcm;
+  wire clkfb_buf;
+  wire clkout0_mmcm;
+  wire clkout1_mmcm;
+
+  IBUF u_clk_in_buf (
+    .I(clk_in1),
+    .O(clk_in1_buf)
+  );
+
+  MMCME2_BASE #(
+    .BANDWIDTH("OPTIMIZED"),
+    .CLKFBOUT_MULT_F(10.000),
+    .CLKIN1_PERIOD(10.000),
+    .CLKOUT0_DIVIDE_F(10.000),
+    .CLKOUT1_DIVIDE(5),
+    .DIVCLK_DIVIDE(1),
+    .STARTUP_WAIT("FALSE")
+  ) u_mmcm (
+    .CLKFBOUT(clkfb_mmcm),
+    .CLKFBOUTB(),
+    .CLKOUT0(clkout0_mmcm),
+    .CLKOUT0B(),
+    .CLKOUT1(clkout1_mmcm),
+    .CLKOUT1B(),
+    .CLKOUT2(),
+    .CLKOUT2B(),
+    .CLKOUT3(),
+    .CLKOUT3B(),
+    .CLKOUT4(),
+    .CLKOUT5(),
+    .CLKOUT6(),
+    .LOCKED(locked),
+    .CLKIN1(clk_in1_buf),
+    .PWRDWN(1'b0),
+    .RST(reset),
+    .CLKFBIN(clkfb_buf)
+  );
+
+  BUFG u_clkfb_buf (.I(clkfb_mmcm), .O(clkfb_buf));
+  BUFG u_clkout1_buf (.I(clkout0_mmcm), .O(clk_out1));
+  BUFG u_clkout2_buf (.I(clkout1_mmcm), .O(clk_out2));
+endmodule

@@ -14,6 +14,7 @@ module csr_file (
     input   trap_is_interrupt,
     input   [31:0]  trap_pc,
     input   [31:0]  trap_cause,
+    input   [31:0]  trap_tval,
 
     input   mret_exec,
 
@@ -45,6 +46,7 @@ module csr_file (
     localparam [11:0] CSR_MSCRATCH = 12'h340;
     localparam [11:0] CSR_MEPC     = 12'h341;
     localparam [11:0] CSR_MCAUSE   = 12'h342;
+    localparam [11:0] CSR_MTVAL    = 12'h343;
     localparam [11:0] CSR_MIP      = 12'h344;
     localparam [11:0] CSR_MHARTID  = 12'hF14;
 
@@ -68,6 +70,7 @@ module csr_file (
     reg [31:0] mscratch;
     reg [31:0] mepc;
     reg [31:0] mcause;
+    reg [31:0] mtval;
     reg [31:0] mip_sw;
     reg [1:0]  priv_mode_q;
 
@@ -111,6 +114,7 @@ module csr_file (
             CSR_MSCRATCH: csr_rdata = mscratch;
             CSR_MEPC:     csr_rdata = mepc;
             CSR_MCAUSE:   csr_rdata = mcause;
+            CSR_MTVAL:    csr_rdata = mtval;
             CSR_MIP:      csr_rdata = mip;
             CSR_MHARTID:  csr_rdata = 32'b0;
             default:      csr_rdata = 32'b0;
@@ -189,6 +193,7 @@ module csr_file (
             mscratch <= 32'b0;
             mepc     <= 32'b0;
             mcause   <= 32'b0;
+            mtval    <= 32'b0;
             mip_sw   <= 32'b0;
             priv_mode_q <= PRIV_M;
         end else begin
@@ -196,6 +201,7 @@ module csr_file (
                 // Save trap information
                 mepc   <= {trap_pc[31:2], 2'b00};
                 mcause <= {trap_is_interrupt, trap_cause[30:0]};
+                mtval  <= trap_is_interrupt ? 32'b0 : trap_tval;
 
                 // mstatus update on trap
                 // MPIE <= MIE
@@ -241,6 +247,10 @@ module csr_file (
 
                     CSR_MCAUSE: begin
                         mcause <= mcause_wr_value;
+                    end
+
+                    CSR_MTVAL: begin
+                        mtval <= csr_new;
                     end
 
                     CSR_MIP: begin

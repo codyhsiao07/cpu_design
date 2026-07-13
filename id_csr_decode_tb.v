@@ -206,6 +206,7 @@ module id_csr_decode_tb;
     check_case(csr_instr(12'h304, 5'd3, 3'b010, 5'd4), 1'b1, CSR_CMD_S, 12'h304, 1'b1, 2);
     check_case(csr_instr(12'h305, 5'd5, 3'b011, 5'd6), 1'b1, CSR_CMD_C, 12'h305, 1'b1, 3);
     check_case(csr_instr(12'h341, 5'd0, 3'b101, 5'd7), 1'b1, CSR_CMD_W, 12'h341, 1'b1, 4);
+    check_case(csr_instr(12'h343, 5'd9, 3'b010, 5'd10), 1'b1, CSR_CMD_S, 12'h343, 1'b1, 13);
     check_case(csr_instr(12'h300, 5'd8, 3'b111, 5'd0), 1'b1, CSR_CMD_C, 12'h300, 1'b1, 11);
     check_case(32'h0000_0013, 1'b0, CSR_CMD_NONE, 12'h000, 1'b1, 5);
     check_sys_case(32'h0000_0073, 1'b1, 1'b0, 1'b0, 6);

@@ -135,12 +135,12 @@ DDR2 區域常數（v0.1）：
 對任何 targeting DDR2 的交易：
 
 - ddr\_byte\_addr = PA - DDR\_BASE
-- app\_addr = ddr\_byte\_addr[31:4]（即 app\_addr = ddr\_byte\_addr >> 4）
+- app\_addr = ddr\_byte\_addr[26:0]（MIG native UI 使用 byte-domain 位址）
 - L2 僅能對 16B 對齊位址發出 MIG 命令（PA[3:0]=0）。
 ## **5.3 Cache line 固定 burst 對映**
-一條 64B cache line 對映為 4 個 MIG beats（每 beat 128-bit）。line base 位址：line\_addr = {PA[31:6], 6b0}。第 k 個 beat（k=0..3）使用：app\_addr = ((line\_addr - DDR\_BASE) >> 4) + k。
+一條 64B cache line 對映為 4 個 MIG beats（每 beat 128-bit）。line base 位址：line\_addr = {PA[31:6], 6b0}。第 k 個 beat（k=0..3）使用：app\_addr = (line\_addr - DDR\_BASE) + 16*k。
 ## **5.4 命令與寫資料握手規則**
-Write 操作需要 command 與 write-data 兩個通道皆完成握手。L2 僅在 (app\_en && app\_rdy) AND (app\_wdf\_wren && app\_wdf\_rdy) 同拍成立時，才視為該 beat 已送出。
+Write 操作需要 command 與 write-data 兩個通道都完成握手，但不要求同拍成立。L2 必須分別保持 app\_en 與 app\_wdf\_wren，直到各自與 app\_rdy / app\_wdf\_rdy 完成握手；兩個通道都完成後，才視為該 beat 已送出。
 
 Read 操作只需 command 握手（app\_en && app\_rdy）。資料於後續以 app\_rd\_data\_valid 回傳；cache line refill 期望 4 個 read beats，並於最後一個 beat 令 app\_rd\_data\_end=1。
 # **6. L2 快取行為（Cached path）**

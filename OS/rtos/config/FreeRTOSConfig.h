@@ -10,9 +10,9 @@
 #endif
 #define configTICK_TYPE_WIDTH_IN_BITS           TICK_TYPE_WIDTH_32_BITS
 
-/* The hardware timer increments once per core clock. */
+/* The MIG-backed board runs the core from the 50 MHz MIG ui_clk. */
 #ifndef configCPU_CLOCK_HZ
-#define configCPU_CLOCK_HZ                      ( ( uint32_t ) 100000000UL )
+#define configCPU_CLOCK_HZ                      ( ( uint32_t ) 50000000UL )
 #endif
 
 #ifndef configTICK_RATE_HZ

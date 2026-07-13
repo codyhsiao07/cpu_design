@@ -171,6 +171,7 @@ module id_stage (
                             (id_instr_i[31:20] == 12'h340) || // mscratch
                             (id_instr_i[31:20] == 12'h341) || // mepc
                             (id_instr_i[31:20] == 12'h342) || // mcause
+                            (id_instr_i[31:20] == 12'h343) || // mtval
                             (id_instr_i[31:20] == 12'h344) || // mip
                             (id_instr_i[31:20] == 12'hF14);   // mhartid, read-only, hart 0
   wire [1:0] csr_required_priv = id_instr_i[29:28];
@@ -439,9 +440,13 @@ module id_stage (
       end
       OP_MISC_MEM: begin
         case (funct3)
-          3'b000, 3'b001: begin
-            // FENCE/FENCE.I are ordering operations. This in-order core has no
-            // separate architectural action here, so decode them as legal NOPs.
+          3'b000: begin
+            // FENCE is sufficient as a NOP in this single-issue in-order core.
+          end
+          3'b001: begin
+            // Zifencei is not implemented: accepting FENCE.I as a NOP could
+            // execute stale instructions after data-side code modification.
+            illegal_instr = 1'b1;
           end
           default: begin
             illegal_instr = 1'b1;
