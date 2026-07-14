@@ -87,6 +87,7 @@ make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 | Demo | 說明 |
 |---|---|
 | `rtos_smoke.mem` | UART queue producer/consumer smoke test |
+| `console` profile | 可透過 UART 操作的正式 RTOS Console，含命令、Queue worker 與狀態監測 |
 | `rtos_vga_demo.mem` | 三個 FreeRTOS task 各自更新 VGA 左/中/右區塊 |
 | `rtos_vga_queue_demo.mem` | Producer task -> FreeRTOS Queue -> Renderer task -> VGA，另有 Heartbeat task |
 
@@ -131,6 +132,8 @@ P -> Q -> R        H
 - `RTOS_API_USAGE_GUIDE_zh-TW.md`
 - `RTOS_STAGE_RESULT.md`
 - `RTOS_VGA_DEMO_NOTES.md`
+- `explain_files_md/RTOS_APP_RUNNER_GUIDE.md`（preflight 後自動切換任意 RTOS `.mem`）
+- `explain_files_md/RTOS_CONSOLE_GUIDE.md`（互動命令、Task/Queue 架構與實板測試）
 
 ## 6. 本地回歸現況
 

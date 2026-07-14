@@ -51,6 +51,7 @@ module uart_bootloader_split_ready_tb;
     .clk(clk),
     .uart_rx_i(uart_rx_i),
     .init_calib_complete(init_calib_complete),
+    .rearm_i(1'b0),
     .app_addr(app_addr),
     .app_cmd(app_cmd),
     .app_en(app_en),

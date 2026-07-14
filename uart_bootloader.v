@@ -5,6 +5,7 @@
 //   2) Host sends 4-byte little-endian length N
 //   3) Host sends N data bytes (written to DDR starting at BOOT_ADDR)
 // After all bytes are written, boot_done_o is asserted.
+// Pulsing rearm_i clears boot_done_o and returns the loader to sync search.
 
 module uart_bootloader #(
   parameter integer CLK_HZ    = 100_000_000,
@@ -16,6 +17,7 @@ module uart_bootloader #(
   input               clk,
   input               uart_rx_i,
   input               init_calib_complete,
+  input               rearm_i,
 
   // MIG app write interface
   output reg [26:0]   app_addr,
@@ -73,7 +75,7 @@ module uart_bootloader #(
   localparam integer RX_FIFO_DEPTH = (1 << RX_FIFO_AW);
 
   // Keep bootloader in reset until MIG calibration completes.
-  wire rst_n_int = init_calib_complete;
+  wire rst_n_int = init_calib_complete & ~rearm_i;
 
   // UART RX (sync)
   (* ASYNC_REG = "TRUE" *) reg rx_ff1;
@@ -954,6 +956,88 @@ module uart_bootloader #(
           send_need_cmd <= 1'b0;
           send_need_wdf <= 1'b0;
           idle_cnt    <= {TIMEOUT_W{1'b0}};
+
+          // Keep the hardware loader recoverable even if the running CPU is
+          // wedged or a partially corrupted image cannot issue rearm_i.  A
+          // fresh host SYNC word takes ownership back from the application;
+          // normal text UART traffic is unaffected unless it contains the
+          // reserved four-byte binary protocol marker.
+          if (rx_valid_div4)
+            sync_shift_div4 <= sync_next_div4;
+          if (rx_valid_div2)
+            sync_shift_div2 <= sync_next_div2;
+          if (rx_valid_nom)
+            sync_shift_nom <= sync_next_nom;
+          if (rx_valid_mul2)
+            sync_shift_mul2 <= sync_next_mul2;
+          if (rx_valid_mul4)
+            sync_shift_mul4 <= sync_next_mul4;
+          if (rx_valid_div4_i)
+            sync_shift_div4_i <= sync_next_div4_i;
+          if (rx_valid_div2_i)
+            sync_shift_div2_i <= sync_next_div2_i;
+          if (rx_valid_nom_i)
+            sync_shift_nom_i <= sync_next_nom_i;
+          if (rx_valid_mul2_i)
+            sync_shift_mul2_i <= sync_next_mul2_i;
+          if (rx_valid_mul4_i)
+            sync_shift_mul4_i <= sync_next_mul4_i;
+
+          if (sync_match) begin
+            boot_done_o <= 1'b0;
+            debug_sync_seen_o <= 1'b1;
+            bytes_total <= 32'd0;
+            byte_cnt    <= 32'd0;
+            len_cnt     <= 2'd0;
+            buf_idx     <= 4'd0;
+            buf_data    <= 128'd0;
+            buf_mask    <= 16'hFFFF;
+            curr_addr   <= BOOT_ADDR;
+            data_done   <= 1'b0;
+            debug_word0_q <= 32'd0;
+            debug_word1_q <= 32'd0;
+            debug_word2_q <= 32'd0;
+            debug_word3_q <= 32'd0;
+            send_addr_q <= 27'd0;
+            send_data_q <= 128'd0;
+            send_mask_q <= 16'hFFFF;
+            rx_fifo_wr_ptr_q <= {RX_FIFO_AW{1'b0}};
+            rx_fifo_rd_ptr_q <= {RX_FIFO_AW{1'b0}};
+            rx_fifo_count_q <= {(RX_FIFO_AW+1){1'b0}};
+            verify_exp0_q <= 128'd0;
+            verify_exp1_q <= 128'd0;
+            verify_exp2_q <= 128'd0;
+            verify_got0_q <= 128'd0;
+            verify_vld0_q <= 16'd0;
+            verify_vld1_q <= 16'd0;
+            verify_vld2_q <= 16'd0;
+            verify_idx_q <= 2'd0;
+            verify_wait_cnt_q <= {VERIFY_WAIT_W{1'b0}};
+            debug_verify0_ok_q <= 1'b0;
+            debug_verify1_ok_q <= 1'b0;
+            debug_verify2_ok_q <= 1'b0;
+            debug_verify_req_seen_o <= 1'b0;
+            debug_verify_rsp_seen_o <= 1'b0;
+            if (match_nom || !autodetect_enabled)
+              rx_sel <= RXSEL_NOM;
+            else if (match_div2)
+              rx_sel <= RXSEL_DIV2;
+            else if (match_mul2)
+              rx_sel <= RXSEL_MUL2;
+            else if (match_div4)
+              rx_sel <= RXSEL_DIV4;
+            else if (match_nom_i)
+              rx_sel <= RXSEL_NOM_I;
+            else if (match_div2_i)
+              rx_sel <= RXSEL_DIV2_I;
+            else if (match_mul2_i)
+              rx_sel <= RXSEL_MUL2_I;
+            else if (match_div4_i)
+              rx_sel <= RXSEL_DIV4_I;
+            else
+              rx_sel <= match_mul4 ? RXSEL_MUL4 : RXSEL_MUL4_I;
+            state <= S_LEN;
+          end
         end
         default: begin
           state <= S_WAIT;

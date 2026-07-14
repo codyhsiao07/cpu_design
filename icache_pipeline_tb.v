@@ -78,7 +78,7 @@ module icache_pipeline_tb;
   integer               rtos_pass_seen;
   integer               uart_mon_bit;
   reg [7:0]             uart_mon_byte;
-  reg [8*15-1:0]        uart_pass_window;
+  reg [8*19-1:0]        uart_pass_window;
 
   // DUT
   icache_pipeline_top #(
@@ -595,13 +595,13 @@ module icache_pipeline_tb;
     rtos_uart_finish_on_pass = 0;
     rtos_trap_trace = 0;
     rtos_pass_seen = 0;
-    uart_pass_window = {8*15{1'b0}};
+    uart_pass_window = {8*19{1'b0}};
     #1;
     if ($value$plusargs("RTOS_UART_MON=%d", rtos_uart_mon)) begin
       // optional UART monitor
     end
     if ($value$plusargs("RTOS_UART_FINISH_ON_PASS=%d", rtos_uart_finish_on_pass)) begin
-      // optional early finish once RTOS_SMOKE_PASS is decoded
+      // optional early finish once an RTOS pass marker is decoded
     end
     if ($value$plusargs("RTOS_TRAP_TRACE=%d", rtos_trap_trace)) begin
       // optional RTOS trap/mret trace
@@ -619,13 +619,15 @@ module icache_pipeline_tb;
         $fflush;
         if (uart_mon_byte == 8'h0A) begin
           if (rtos_pass_seen != 0) begin
-            $display("PASS: RTOS UART observed RTOS_SMOKE_PASS");
+            $display("PASS: RTOS UART observed pass marker");
             if (rtos_uart_finish_on_pass != 0)
               tb_finish;
           end
         end else if (uart_mon_byte != 8'h0D) begin
-          uart_pass_window = {uart_pass_window[(8*14)-1:0], uart_mon_byte};
-          if ({uart_pass_window[(8*14)-1:0], uart_mon_byte} == "RTOS_SMOKE_PASS") begin
+          uart_pass_window = {uart_pass_window[(8*18)-1:0], uart_mon_byte};
+          if ((uart_pass_window[(8*15)-1:0] == "RTOS_SMOKE_PASS") ||
+              (uart_pass_window == "RTOS_PREFLIGHT_PASS") ||
+              (uart_pass_window[(8*9)-1:0] == "APP_READY")) begin
             rtos_pass_seen = 1;
           end
         end

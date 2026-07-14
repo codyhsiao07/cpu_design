@@ -1,0 +1,361 @@
+Archive member included to satisfy reference by file (symbol)
+
+C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+                              C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o (__clzsi2)
+C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+                              C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o) (__clz_tab)
+
+There are no discarded input sections
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+DDR              0x80000000         0x00080000         xrw
+*default*        0x00000000         0xffffffff
+
+Linker script and memory map
+
+                0x80000000                        . = ORIGIN (DDR)
+
+.text           0x80000000     0x501c
+ *(.text.start)
+ .text.start    0x80000000       0x50 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+                0x80000000                _start
+ *(.text*)
+ .text          0x80000050        0x0 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+ .text          0x80000050      0x17c C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .text.startup  0x800001cc       0xf4 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+                0x800001cc                main
+ .text          0x800002c0      0x210 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+                0x800002c0                rtos_uart_putc
+                0x800002e0                rtos_uart_write
+                0x80000338                rtos_uart_write_u32
+                0x800003d8                rtos_uart_write_hex32
+                0x8000044c                rtos_uart_write_line
+                0x80000474                rtos_uart_wait_tx_idle
+                0x8000048c                rtos_uart_try_getc
+ .text          0x800004d0      0x3cc C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+                0x800004d0                vAssertCalled
+                0x800005a8                vApplicationGetIdleTaskMemory
+                0x800005c8                vApplicationStackOverflowHook
+                0x80000614                freertos_risc_v_application_exception_handler
+                0x80000758                freertos_risc_v_application_interrupt_handler
+ .text          0x8000089c       0xe0 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+                0x8000089c                memset
+                0x800008b8                memcpy
+                0x800008dc                memmove
+                0x80000924                memcmp
+                0x80000958                strlen
+ .text          0x8000097c       0x40 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+                0x8000097c                rtos_board_disable_external_interrupts
+                0x8000098c                rtos_board_request_image_reload
+ .text          0x800009bc       0xec C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+                0x800009bc                vListInitialise
+                0x800009dc                vListInitialiseItem
+                0x800009e4                vListInsertEnd
+                0x80000a10                vListInsert
+                0x80000a60                uxListRemove
+ .text          0x80000aa8     0x1718 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+                0x80000ca8                xQueueGenericReset
+                0x80000dd8                xQueueGenericCreateStatic
+                0x80000ec4                xQueueGenericGetStaticBuffers
+                0x80000f60                xQueueGenericSend
+                0x8000121c                xQueueGenericSendFromISR
+                0x800013b8                xQueueGiveFromISR
+                0x800014f4                xQueueReceive
+                0x800017b8                xQueueSemaphoreTake
+                0x80001a2c                xQueuePeek
+                0x80001ce4                xQueueReceiveFromISR
+                0x80001e90                xQueuePeekFromISR
+                0x80001fb4                uxQueueMessagesWaiting
+                0x80002024                uxQueueSpacesAvailable
+                0x800020a4                uxQueueMessagesWaitingFromISR
+                0x800020e8                vQueueDelete
+                0x80002108                uxQueueGetQueueItemSize
+                0x80002110                uxQueueGetQueueLength
+                0x80002118                xQueueIsQueueEmptyFromISR
+                0x80002164                xQueueIsQueueFullFromISR
+ .text          0x800021c0     0x2094 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+                0x8000255c                xTaskCreateStatic
+                0x80002930                vTaskStartScheduler
+                0x800029e4                vTaskEndScheduler
+                0x800029f8                vTaskSuspendAll
+                0x80002a0c                xTaskResumeAll
+                0x80002c68                vTaskDelay
+                0x80002d00                xTaskGetTickCount
+                0x80002d0c                xTaskGetTickCountFromISR
+                0x80002d18                uxTaskGetNumberOfTasks
+                0x80002d24                pcTaskGetName
+                0x80002d78                xTaskGetStaticBuffers
+                0x80002e40                xTaskCatchUpTicks
+                0x80002ec0                xTaskIncrementTick
+                0x80002eec                vTaskSwitchContext
+                0x80003020                vTaskPlaceOnEventList
+                0x8000308c                vTaskPlaceOnUnorderedEventList
+                0x80003180                xTaskRemoveFromEventList
+                0x80003304                vTaskRemoveFromUnorderedEventList
+                0x800034a8                vTaskSetTimeOutState
+                0x80003518                vTaskInternalSetTimeOutState
+                0x80003534                xTaskCheckForTimeOut
+                0x80003620                vTaskMissedYield
+                0x80003630                xTaskGetSchedulerState
+                0x80003654                uxTaskResetEventItemValue
+                0x8000367c                ulTaskGenericNotifyTake
+                0x800037c4                xTaskGenericNotifyWait
+                0x80003954                xTaskGenericNotify
+                0x80003be8                xTaskGenericNotifyFromISR
+                0x80003ed4                vTaskGenericNotifyGiveFromISR
+                0x800040d4                xTaskGenericNotifyStateClear
+                0x80004164                ulTaskGenericNotifyValueClear
+                0x800041f8                vTaskResetState
+ .text          0x80004254       0xe8 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+                0x80004254                vPortSetupTimerInterrupt
+                0x800042ec                xPortStartScheduler
+                0x80004338                vPortEndScheduler
+ .text          0x8000433c      0x120 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+                0x8000433c                pxPortInitialiseStack
+                0x8000439c                xPortStartFirstTask
+ .text.freertos_risc_v_exception_handler
+                0x8000445c      0x20c C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+                0x8000445c                freertos_risc_v_exception_handler
+ .text.freertos_risc_v_interrupt_handler
+                0x80004668      0x154 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+                0x80004668                freertos_risc_v_interrupt_handler
+ .text.freertos_risc_v_mtimer_interrupt_handler
+                0x800047bc      0x1a4 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+                0x800047bc                freertos_risc_v_mtimer_interrupt_handler
+ *fill*         0x80004960       0xa0 
+ .text.freertos_risc_v_trap_handler
+                0x80004a00      0x200 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+                0x80004a00                freertos_risc_v_trap_handler
+ .text          0x80004c00        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .text.__clzsi2
+                0x80004c00       0x88 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+                0x80004c00                __clzsi2
+ .text          0x80004c88        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+ *(.rodata*)
+ .rodata.str1.4
+                0x80004c88      0x256 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+                                 0xc9 (size before relaxing)
+ .rodata.str1.4
+                0x80004ede        0x0 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+                                  0x6 (size before relaxing)
+ *fill*         0x80004ede        0x2 
+ .rodata        0x80004ee0       0x11 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+ .rodata.str1.4
+                0x80004ef1        0x0 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+                                 0xc8 (size before relaxing)
+ .rodata.str1.4
+                0x80004ef1        0x0 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+                                 0x5e (size before relaxing)
+ .rodata.str1.4
+                0x80004ef1        0x0 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+                                 0x5e (size before relaxing)
+ *fill*         0x80004ef1        0x3 
+ .rodata        0x80004ef4       0x28 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ .rodata.__clz_tab
+                0x80004f1c      0x100 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+                0x80004f1c                __clz_tab
+
+.srodata        0x8000501c       0x10
+ .srodata       0x8000501c        0x4 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ .srodata       0x80005020        0xc C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+                0x80005020                ullMachineTimerCompareRegisterBase
+                0x80005024                uxTimerIncrementsForOneTick
+                0x80005028                xISRStackTop
+
+.rela.dyn       0x8000502c        0x0
+ .rela.text.start
+                0x8000502c        0x0 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+
+.data           0x8000502c        0xc
+                0x8000502c                        . = ALIGN (0x4)
+                0x8000582c                        __global_pointer$ = (. + 0x800)
+ *(.sdata*)
+ .sdata         0x8000502c        0xc C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+                0x8000502c                pxCriticalNesting
+                0x80005030                xCriticalNesting
+                0x80005034                pullNextTime
+ *(.data*)
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+ .data          0x80005038        0x0 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+ .data          0x80005038        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .data          0x80005038        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.bss            0x80005040     0x1620
+                0x80005040                        . = ALIGN (0x4)
+                0x80005040                        __bss_start = .
+ *(.sbss*)
+ .sbss          0x80005040        0x4 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .sbss          0x80005044       0x34 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+                0x80005074                pxCurrentTCB
+ .sbss          0x80005078       0x10 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+                0x80005078                xTaskReturnAddress
+                0x8000507c                pullMachineTimerCompareRegister
+                0x80005080                ullNextTime
+ *(.bss*)
+ .bss           0x80005088        0x0 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+ .bss           0x80005088      0xce8 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .bss           0x80005d70        0x0 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+ .bss           0x80005d70      0x448 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+ .bss           0x800061b8        0x0 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+ .bss           0x800061b8        0x0 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+ .bss           0x800061b8        0x0 C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+ .bss           0x800061b8        0x0 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+ .bss           0x800061b8       0xa0 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ *fill*         0x80006258        0x8 
+ .bss           0x80006260      0x400 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+ .bss           0x80006660        0x0 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+ .bss           0x80006660        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .bss           0x80006660        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+ *(COMMON)
+                0x80006660                        . = ALIGN (0x4)
+                0x80006660                        __bss_end = .
+                0x80006660                        . = ALIGN (0x10)
+                0x80080000                        __stack_top = (ORIGIN (DDR) + LENGTH (DDR))
+LOAD C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+LOAD C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+LOAD C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+LOAD C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+LOAD C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a
+OUTPUT(C:\cpu_design\build_rtos_apps\preflight\rtos_preflight.elf elf32-littleriscv)
+
+.riscv.attributes
+                0x00000000       0x37
+ .riscv.attributes
+                0x00000000       0x35 C:\Users\a0968\AppData\Local\Temp\ccUteJgH.o
+ .riscv.attributes
+                0x00000035       0x37 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .riscv.attributes
+                0x0000006c       0x33 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+ .riscv.attributes
+                0x0000009f       0x37 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+ .riscv.attributes
+                0x000000d6       0x33 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+ .riscv.attributes
+                0x00000109       0x37 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+ .riscv.attributes
+                0x00000140       0x33 C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+ .riscv.attributes
+                0x00000173       0x37 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+ .riscv.attributes
+                0x000001aa       0x37 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ .riscv.attributes
+                0x000001e1       0x37 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+ .riscv.attributes
+                0x00000218       0x35 C:\Users\a0968\AppData\Local\Temp\ccWuLBgf.o
+ .riscv.attributes
+                0x0000024d       0x2a C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .riscv.attributes
+                0x00000277       0x2a C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.comment        0x00000000       0x33
+ .comment       0x00000000       0x33 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+                                 0x34 (size before relaxing)
+ .comment       0x00000033        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+                                 0x34 (size before relaxing)
+
+.note.GNU-stack
+                0x00000000        0x0
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccMT1UFb.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccO697nJ.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\cc8MM7lp.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccS49mn9.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccKM60MY.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\cckrSRaS.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccVp6b3T.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccadkg9g.o
+ .note.GNU-stack
+                0x00000000        0x0 C:\Users\a0968\AppData\Local\Temp\ccJYLuvI.o
+ .note.GNU-stack
+                0x00000000        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .note.GNU-stack
+                0x00000000        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.debug_info     0x00000000      0x25a
+ .debug_info    0x00000000      0x168 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .debug_info    0x00000168       0xf2 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.debug_abbrev   0x00000000      0x14f
+ .debug_abbrev  0x00000000       0xd9 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .debug_abbrev  0x000000d9       0x76 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.debug_loclists
+                0x00000000       0xe3
+ .debug_loclists
+                0x00000000       0xe3 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+
+.debug_aranges  0x00000000       0x38
+ .debug_aranges
+                0x00000000       0x20 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .debug_aranges
+                0x00000020       0x18 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.debug_rnglists
+                0x00000000       0x2a
+ .debug_rnglists
+                0x00000000       0x2a C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+
+.debug_line     0x00000000      0x1a8
+ .debug_line    0x00000000      0x15f C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+ .debug_line    0x0000015f       0x49 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+
+.debug_str      0x00000000      0x191
+ .debug_str     0x00000000      0x191 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+                                0x1f3 (size before relaxing)
+ .debug_str     0x00000191        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+                                0x1d6 (size before relaxing)
+
+.debug_line_str
+                0x00000000      0x228
+ .debug_line_str
+                0x00000000      0x228 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)
+                                0x232 (size before relaxing)
+ .debug_line_str
+                0x00000228        0x0 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clz.o)
+                                0x232 (size before relaxing)
+
+.debug_frame    0x00000000       0x20
+ .debug_frame   0x00000000       0x20 C:/riscv/xpack-riscv-none-elf-gcc/bin/../lib/gcc/riscv-none-elf/15.2.0/rv32im/ilp32\libgcc.a(_clzsi2.o)

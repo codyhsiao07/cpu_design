@@ -490,6 +490,7 @@ module icache_pipeline_top #(
           .clk               (ui_clk),
           .uart_rx_i         (uart_rx_i),
           .init_calib_complete (init_calib_complete & boot_memtest_done_int),
+          .rearm_i           (launcher_reset_active_q),
           .app_addr          (app_addr_boot),
           .app_cmd           (app_cmd_boot),
           .app_en            (app_en_boot),

@@ -8,6 +8,7 @@ module uart_bootloader_tb;
   reg clk = 1'b0;
   reg uart_rx_i = 1'b1;
   reg init_calib_complete = 1'b0;
+  reg rearm_i = 1'b0;
 
   wire [26:0] app_addr;
   wire [2:0] app_cmd;
@@ -48,6 +49,7 @@ module uart_bootloader_tb;
     .clk(clk),
     .uart_rx_i(uart_rx_i),
     .init_calib_complete(init_calib_complete),
+    .rearm_i(rearm_i),
     .app_addr(app_addr),
     .app_cmd(app_cmd),
     .app_en(app_en),
@@ -182,7 +184,49 @@ module uart_bootloader_tb;
     if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
       fail("bootloader readback verification did not pass");
 
-    $display("[TB] PASS: sync, MIG write, readback verify, and boot_done all observed.");
+    // A launcher-requested rearm must return the loader to sync search so a
+    // second image can replace the first one without power-cycling the FPGA.
+    rearm_i = 1'b1;
+    repeat (3) @(posedge clk);
+    rearm_i = 1'b0;
+    repeat (3) @(posedge clk);
+    if (boot_done_o)
+      fail("bootloader remained done after rearm");
+
+    send_word_le(32'hC0DE5A5A);
+    send_word_le(32'd4);
+    send_byte(8'hA5);
+    send_byte(8'h5A);
+    send_byte(8'hC3);
+    send_byte(8'h3C);
+
+    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    if (!boot_done_o)
+      fail("bootloader never completed the second image");
+    if (last_wdf_data[31:0] !== 32'h3CC35AA5)
+      fail("second image did not replace the first image");
+    if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
+      fail("second image readback verification did not pass");
+
+    // A fresh protocol SYNC must also recover directly from S_DONE. This is
+    // the host-side escape hatch when the running CPU is wedged and therefore
+    // cannot request a software rearm.
+    send_word_le(32'hC0DE5A5A);
+    send_word_le(32'd4);
+    send_byte(8'hDE);
+    send_byte(8'hAD);
+    send_byte(8'hBE);
+    send_byte(8'hEF);
+
+    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    if (!boot_done_o)
+      fail("bootloader never completed host-sync recovery image");
+    if (last_wdf_data[31:0] !== 32'hEFBEADDE)
+      fail("host-sync recovery did not replace the previous image");
+    if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
+      fail("host-sync recovery readback verification did not pass");
+
+    $display("[TB] PASS: rearm and host-sync recovery images passed readback verification.");
     $finish(0);
   end
 endmodule
