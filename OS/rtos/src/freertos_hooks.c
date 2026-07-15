@@ -3,11 +3,14 @@
 #include "uart.h"
 
 #define RTOS_IDLE_STACK_WORDS 256u
+#define RTOS_TIMER_STACK_WORDS 512u
 
 extern void * volatile pxCurrentTCB;
 
 static StaticTask_t idle_tcb;
 static StackType_t idle_stack[ RTOS_IDLE_STACK_WORDS ];
+static StaticTask_t timer_tcb;
+static StackType_t timer_stack[ RTOS_TIMER_STACK_WORDS ];
 
 #if defined( RTOS_VGA_DEMO_TRACE )
 #define RTOS_VGA_TRACE_BASE       ( ( volatile uint32_t * ) 0x50000000u )
@@ -112,6 +115,26 @@ void vApplicationGetIdleTaskMemory( StaticTask_t ** idle_tcb_buffer,
     *idle_stack_size = RTOS_IDLE_STACK_WORDS;
 }
 
+void vApplicationGetTimerTaskMemory( StaticTask_t ** timer_tcb_buffer,
+                                     StackType_t ** timer_stack_buffer,
+                                     configSTACK_DEPTH_TYPE * timer_stack_size ) {
+    *timer_tcb_buffer = &timer_tcb;
+    *timer_stack_buffer = timer_stack;
+    *timer_stack_size = RTOS_TIMER_STACK_WORDS;
+}
+
+void vApplicationMallocFailedHook( void ) {
+    taskDISABLE_INTERRUPTS();
+    rtos_uart_write( "[RTOS] malloc failed free=" );
+    rtos_uart_write_u32( ( uint32_t ) xPortGetFreeHeapSize() );
+    rtos_uart_write( " min=" );
+    rtos_uart_write_u32( ( uint32_t ) xPortGetMinimumEverFreeHeapSize() );
+    rtos_uart_write( "\n" );
+    for( ;; ) {
+        __asm volatile ( "nop" );
+    }
+}
+
 void vApplicationStackOverflowHook( TaskHandle_t task, char * task_name ) {
     ( void ) task;
 
@@ -165,6 +188,13 @@ void freertos_risc_v_application_interrupt_handler( uint32_t mcause ) {
     uint32_t mstatus;
     uint32_t mie;
     uint32_t mip;
+
+    if( mcause == 0x8000000Bu ) {
+        BaseType_t higher_priority_task_woken =
+            rtos_uart_handle_external_interrupt() ? pdTRUE : pdFALSE;
+        portYIELD_FROM_ISR( higher_priority_task_woken );
+        return;
+    }
 
     __asm volatile ( "mv %0, sp" : "=r" ( current_sp ) );
     __asm volatile ( "csrr %0, mepc" : "=r" ( mepc ) );

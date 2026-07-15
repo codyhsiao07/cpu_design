@@ -1,9 +1,16 @@
 // uart_bootloader.v
 // Minimal UART-based DDR loader using MIG app interface.
-// Protocol:
-//   1) Host sends 4-byte little-endian SYNC_WORD (0xC0DE5A5A)
+// Protocol v1 (legacy):
+//   1) Host sends 4-byte little-endian SYNC_WORD_V1 (0xC0DE5A5A)
 //   2) Host sends 4-byte little-endian length N
 //   3) Host sends N data bytes (written to DDR starting at BOOT_ADDR)
+// Protocol v2:
+//   1) Host sends 4-byte little-endian SYNC_WORD_V2 (0xC0DE5A5B)
+//   2) Host sends 4-byte little-endian length N
+//   3) Host sends 4-byte little-endian IEEE CRC32 of the payload
+//   4) Host sends N data bytes
+// v2 only releases the CPU after both the UART payload CRC and the full DDR
+// image readback CRC pass. v1 remains accepted for older host tools.
 // After all bytes are written, boot_done_o is asserted.
 // Pulsing rearm_i clears boot_done_o and returns the loader to sync search.
 
@@ -33,6 +40,7 @@ module uart_bootloader #(
   input               app_rd_data_end,
   input               app_rd_data_valid,
 
+  output              boot_uart_tx_o,
   output reg          boot_done_o,
   output reg          debug_edge_seen_o,
   output reg          debug_rx_seen_o,
@@ -61,7 +69,8 @@ module uart_bootloader #(
 );
   localparam [2:0] MIG_CMD_WRITE = 3'b000;
   localparam [2:0] MIG_CMD_READ  = 3'b001;
-  localparam [31:0] SYNC_WORD    = 32'hC0DE5A5A;
+  localparam [31:0] SYNC_WORD_V1 = 32'hC0DE5A5A;
+  localparam [31:0] SYNC_WORD_V2 = 32'hC0DE5A5B;
   // The launcher suite now uses separated DDR regions for menu and games, so
   // the packed upload can legitimately exceed 1 MiB. Keep a guard, but size it
   // for the current DDR map instead of rejecting valid images.
@@ -248,8 +257,11 @@ module uart_bootloader #(
   localparam [2:0] S_VERIFY_WAIT = 3'd7;
 
   reg [2:0]  state;
-  reg [1:0]  len_cnt;
+  reg [2:0]  len_cnt;
   reg [31:0] bytes_total;
+  reg [31:0] expected_crc_q;
+  reg [31:0] payload_crc_q;
+  reg         protocol_v2_q;
   reg [31:0] byte_cnt;
   reg [3:0]  buf_idx;
   reg [127:0] buf_data;
@@ -290,9 +302,20 @@ module uart_bootloader #(
   reg [15:0]  verify_vld2_q;
   reg [1:0]   verify_idx_q;
   reg [VERIFY_WAIT_W-1:0] verify_wait_cnt_q;
+  reg [26:0]  verify_addr_q;
+  reg [31:0]  verify_bytes_done_q;
+  reg [31:0]  verify_crc_q;
+  reg [127:0] verify_beat_q;
+  reg [3:0]   verify_byte_idx_q;
+  reg         verify_have_beat_q;
   reg         debug_verify0_ok_q;
   reg         debug_verify1_ok_q;
   reg         debug_verify2_ok_q;
+  reg [7:0]   report_tx_data_q;
+  reg         report_tx_en_q;
+  wire        report_tx_busy_w;
+  reg         release_pending_q;
+  reg         release_report_started_q;
 
   localparam [31:0] CRT0_WORD0 = 32'h0008_0117;
   localparam [31:0] CRT0_WORD1 = 32'hFFC1_0113;
@@ -337,16 +360,36 @@ module uart_bootloader #(
   wire [31:0] sync_next_nom_i  = {rx_data_nom_i,  sync_shift_nom_i[31:8]};
   wire [31:0] sync_next_mul2_i = {rx_data_mul2_i, sync_shift_mul2_i[31:8]};
   wire [31:0] sync_next_mul4_i = {rx_data_mul4_i, sync_shift_mul4_i[31:8]};
-  wire        match_div4 = rx_valid_div4 && (sync_next_div4 == SYNC_WORD);
-  wire        match_div2 = rx_valid_div2 && (sync_next_div2 == SYNC_WORD);
-  wire        match_nom  = rx_valid_nom  && (sync_next_nom  == SYNC_WORD);
-  wire        match_mul2 = rx_valid_mul2 && (sync_next_mul2 == SYNC_WORD);
-  wire        match_mul4 = rx_valid_mul4 && (sync_next_mul4 == SYNC_WORD);
-  wire        match_div4_i = rx_valid_div4_i && (sync_next_div4_i == SYNC_WORD);
-  wire        match_div2_i = rx_valid_div2_i && (sync_next_div2_i == SYNC_WORD);
-  wire        match_nom_i  = rx_valid_nom_i  && (sync_next_nom_i  == SYNC_WORD);
-  wire        match_mul2_i = rx_valid_mul2_i && (sync_next_mul2_i == SYNC_WORD);
-  wire        match_mul4_i = rx_valid_mul4_i && (sync_next_mul4_i == SYNC_WORD);
+  wire match_div4_v1 = rx_valid_div4 && (sync_next_div4 == SYNC_WORD_V1);
+  wire match_div2_v1 = rx_valid_div2 && (sync_next_div2 == SYNC_WORD_V1);
+  wire match_nom_v1  = rx_valid_nom  && (sync_next_nom  == SYNC_WORD_V1);
+  wire match_mul2_v1 = rx_valid_mul2 && (sync_next_mul2 == SYNC_WORD_V1);
+  wire match_mul4_v1 = rx_valid_mul4 && (sync_next_mul4 == SYNC_WORD_V1);
+  wire match_div4_i_v1 = rx_valid_div4_i && (sync_next_div4_i == SYNC_WORD_V1);
+  wire match_div2_i_v1 = rx_valid_div2_i && (sync_next_div2_i == SYNC_WORD_V1);
+  wire match_nom_i_v1  = rx_valid_nom_i  && (sync_next_nom_i  == SYNC_WORD_V1);
+  wire match_mul2_i_v1 = rx_valid_mul2_i && (sync_next_mul2_i == SYNC_WORD_V1);
+  wire match_mul4_i_v1 = rx_valid_mul4_i && (sync_next_mul4_i == SYNC_WORD_V1);
+  wire match_div4_v2 = rx_valid_div4 && (sync_next_div4 == SYNC_WORD_V2);
+  wire match_div2_v2 = rx_valid_div2 && (sync_next_div2 == SYNC_WORD_V2);
+  wire match_nom_v2  = rx_valid_nom  && (sync_next_nom  == SYNC_WORD_V2);
+  wire match_mul2_v2 = rx_valid_mul2 && (sync_next_mul2 == SYNC_WORD_V2);
+  wire match_mul4_v2 = rx_valid_mul4 && (sync_next_mul4 == SYNC_WORD_V2);
+  wire match_div4_i_v2 = rx_valid_div4_i && (sync_next_div4_i == SYNC_WORD_V2);
+  wire match_div2_i_v2 = rx_valid_div2_i && (sync_next_div2_i == SYNC_WORD_V2);
+  wire match_nom_i_v2  = rx_valid_nom_i  && (sync_next_nom_i  == SYNC_WORD_V2);
+  wire match_mul2_i_v2 = rx_valid_mul2_i && (sync_next_mul2_i == SYNC_WORD_V2);
+  wire match_mul4_i_v2 = rx_valid_mul4_i && (sync_next_mul4_i == SYNC_WORD_V2);
+  wire match_div4 = match_div4_v1 | match_div4_v2;
+  wire match_div2 = match_div2_v1 | match_div2_v2;
+  wire match_nom  = match_nom_v1  | match_nom_v2;
+  wire match_mul2 = match_mul2_v1 | match_mul2_v2;
+  wire match_mul4 = match_mul4_v1 | match_mul4_v2;
+  wire match_div4_i = match_div4_i_v1 | match_div4_i_v2;
+  wire match_div2_i = match_div2_i_v1 | match_div2_i_v2;
+  wire match_nom_i  = match_nom_i_v1  | match_nom_i_v2;
+  wire match_mul2_i = match_mul2_i_v1 | match_mul2_i_v2;
+  wire match_mul4_i = match_mul4_i_v1 | match_mul4_i_v2;
 
   wire autodetect_enabled = (ENABLE_RX_AUTODETECT != 0);
   wire sync_match = match_nom ||
@@ -354,6 +397,11 @@ module uart_bootloader #(
                      (match_div2 || match_mul2 || match_div4 || match_mul4 ||
                       match_nom_i || match_div2_i || match_mul2_i ||
                       match_div4_i || match_mul4_i));
+  wire sync_match_v2 = match_nom_v2 ||
+                       (autodetect_enabled &&
+                        (match_div2_v2 || match_mul2_v2 || match_div4_v2 ||
+                         match_mul4_v2 || match_nom_i_v2 || match_div2_i_v2 ||
+                         match_mul2_i_v2 || match_div4_i_v2 || match_mul4_i_v2));
   wire fire_send_cmd = (state == S_SEND) && send_need_cmd && app_rdy;
   wire fire_send_wdf = (state == S_SEND) && send_need_wdf && app_wdf_rdy;
   wire fire_send_done = (state == S_SEND) &&
@@ -403,6 +451,21 @@ module uart_bootloader #(
       masked_cmp128 = ok;
     end
   endfunction
+
+  // Loader replies allow the host to retry immediately:
+  // 0x06 = accepted; 0x15 = payload CRC mismatch;
+  // 0x16 = DDR prefix readback mismatch.
+  uart_tx #(
+    .CLK_HZ (CLK_HZ),
+    .BAUD   (BAUD)
+  ) u_report_tx (
+    .data_in (report_tx_data_q),
+    .Tx_en   (report_tx_en_q),
+    .clk_50m (clk),
+    .rst_n   (rst_n_int),
+    .Tx      (boot_uart_tx_o),
+    .Tx_busy (report_tx_busy_w)
+  );
 
   function [127:0] set_byte128;
     input [127:0] prev;
@@ -474,6 +537,26 @@ module uart_bootloader #(
   assign debug_verify0_memtest0_ok_o = debug_verify_rsp_seen_o &&
                                        (verify_got0_q == MEMTEST0_WORD);
 
+  // Reflected IEEE CRC32 update (polynomial 0xEDB88320). The register starts
+  // at all ones and is complemented once after the final payload byte, which
+  // matches zlib.crc32 on the host.
+  function [31:0] crc32_byte;
+    input [31:0] crc_in;
+    input [7:0]  data_in;
+    integer bit_index;
+    reg [31:0] crc;
+    begin
+      crc = crc_in ^ {24'd0, data_in};
+      for (bit_index = 0; bit_index < 8; bit_index = bit_index + 1) begin
+        if (crc[0])
+          crc = (crc >> 1) ^ 32'hEDB88320;
+        else
+          crc = crc >> 1;
+      end
+      crc32_byte = crc;
+    end
+  endfunction
+
   // Default MIG outputs
   always @(*) begin
     app_addr     = 27'd0;
@@ -490,7 +573,7 @@ module uart_bootloader #(
       app_wdf_wren = send_need_wdf;
       app_wdf_end  = send_need_wdf;
     end else if (state == S_VERIFY_REQ) begin
-      app_addr     = (BOOT_ADDR - DDR_BASE) + {21'd0, verify_idx_q, 4'b0000};
+      app_addr     = (BOOT_ADDR - DDR_BASE) + verify_addr_q;
       app_cmd      = MIG_CMD_READ;
       app_en       = fire_verify_req;
     end
@@ -499,8 +582,11 @@ module uart_bootloader #(
   always @(posedge clk) begin
     if (!rst_n_int) begin
       state       <= S_WAIT;
-      len_cnt     <= 2'd0;
+      len_cnt     <= 3'd0;
       bytes_total <= 32'd0;
+      expected_crc_q <= 32'd0;
+      payload_crc_q <= 32'hFFFF_FFFF;
+      protocol_v2_q <= 1'b0;
       byte_cnt    <= 32'd0;
       buf_idx     <= 4'd0;
       buf_data    <= 128'd0;
@@ -546,10 +632,21 @@ module uart_bootloader #(
       verify_vld2_q <= 16'd0;
       verify_idx_q <= 2'd0;
       verify_wait_cnt_q <= {VERIFY_WAIT_W{1'b0}};
+      verify_addr_q <= 27'd0;
+      verify_bytes_done_q <= 32'd0;
+      verify_crc_q <= 32'hFFFF_FFFF;
+      verify_beat_q <= 128'd0;
+      verify_byte_idx_q <= 4'd0;
+      verify_have_beat_q <= 1'b0;
       debug_verify0_ok_q <= 1'b0;
       debug_verify1_ok_q <= 1'b0;
       debug_verify2_ok_q <= 1'b0;
+      report_tx_data_q <= 8'd0;
+      report_tx_en_q <= 1'b0;
+      release_pending_q <= 1'b0;
+      release_report_started_q <= 1'b0;
     end else begin
+      report_tx_en_q <= 1'b0;
       if (rx_ff1 ^ rx_ff2)
         debug_edge_seen_o <= 1'b1;
       if (any_valid)
@@ -573,8 +670,11 @@ module uart_bootloader #(
           sync_shift_mul4_i <= 32'd0;
           idle_cnt    <= {TIMEOUT_W{1'b0}};
           if (init_calib_complete) begin
-            len_cnt     <= 2'd0;
+            len_cnt     <= 3'd0;
             bytes_total <= 32'd0;
+            expected_crc_q <= 32'd0;
+            payload_crc_q <= 32'hFFFF_FFFF;
+            protocol_v2_q <= 1'b0;
             state       <= S_SYNC;
           end
         end
@@ -582,7 +682,7 @@ module uart_bootloader #(
           boot_done_o <= 1'b0;
           send_need_cmd <= 1'b0;
           send_need_wdf <= 1'b0;
-          len_cnt     <= 2'd0;
+          len_cnt     <= 3'd0;
           idle_cnt    <= {TIMEOUT_W{1'b0}};
           if (rx_valid_div4)
             sync_shift_div4 <= sync_next_div4;
@@ -608,6 +708,11 @@ module uart_bootloader #(
           if (sync_match) begin
             debug_sync_seen_o <= 1'b1;
             bytes_total <= 32'd0;
+            expected_crc_q <= 32'd0;
+            payload_crc_q <= 32'hFFFF_FFFF;
+            protocol_v2_q <= sync_match_v2;
+            release_pending_q <= 1'b0;
+            release_report_started_q <= 1'b0;
             byte_cnt    <= 32'd0;
             buf_idx     <= 4'd0;
             buf_data    <= 128'd0;
@@ -667,18 +772,83 @@ module uart_bootloader #(
 
           if (!rx_fifo_empty) begin
             idle_cnt <= {TIMEOUT_W{1'b0}};
-            bytes_total[8*len_cnt +: 8] <= rx_fifo_rdata;
+            if (len_cnt < 3'd4)
+              bytes_total[8*len_cnt +: 8] <= rx_fifo_rdata;
+            else
+              expected_crc_q[8*(len_cnt - 3'd4) +: 8] <= rx_fifo_rdata;
             rx_fifo_rd_ptr_q <= rx_fifo_rd_ptr_q + 1'b1;
             if (!(sel_valid && !rx_fifo_full))
               rx_fifo_count_q <= rx_fifo_count_q - 1'b1;
-            if (len_cnt == 2'd3) begin
-              len_cnt   <= 2'd0;
+            if (len_cnt == 3'd3) begin
+              if ({rx_fifo_rdata, bytes_total[23:0]} == 32'd0) begin
+                // Empty frames are only retained for legacy compatibility.
+                if (protocol_v2_q) begin
+                  protocol_v2_q <= 1'b0;
+                  state <= S_SYNC;
+                end else begin
+                  boot_done_o <= 1'b1;
+                  state <= S_DONE;
+                end
+              end else if ({rx_fifo_rdata, bytes_total[23:0]} > MAX_BYTES) begin
+                rx_sel <= RXSEL_NOM;
+                sync_shift_div4 <= 32'd0;
+                sync_shift_div2 <= 32'd0;
+                sync_shift_nom  <= 32'd0;
+                sync_shift_mul2 <= 32'd0;
+                sync_shift_mul4 <= 32'd0;
+                sync_shift_div4_i <= 32'd0;
+                sync_shift_div2_i <= 32'd0;
+                sync_shift_nom_i  <= 32'd0;
+                sync_shift_mul2_i <= 32'd0;
+                sync_shift_mul4_i <= 32'd0;
+                protocol_v2_q <= 1'b0;
+                state <= S_SYNC;
+              end else if (protocol_v2_q) begin
+                // v2 has another four header bytes containing payload CRC32.
+                len_cnt <= 3'd4;
+              end else begin
+                len_cnt   <= 3'd0;
+                byte_cnt  <= 32'd0;
+                buf_idx   <= 4'd0;
+                buf_data  <= 128'd0;
+                buf_mask  <= 16'hFFFF;
+                curr_addr <= BOOT_ADDR;
+                data_done <= 1'b0;
+                payload_crc_q <= 32'hFFFF_FFFF;
+                debug_word0_q <= 32'd0;
+                debug_word1_q <= 32'd0;
+                debug_word2_q <= 32'd0;
+                debug_word3_q <= 32'd0;
+                send_addr_q <= 27'd0;
+                send_data_q <= 128'd0;
+                send_mask_q <= 16'hFFFF;
+                verify_exp0_q <= 128'd0;
+                verify_exp1_q <= 128'd0;
+                verify_exp2_q <= 128'd0;
+                verify_got0_q <= 128'd0;
+                verify_vld0_q <= 16'd0;
+                verify_vld1_q <= 16'd0;
+                verify_vld2_q <= 16'd0;
+                verify_idx_q <= 2'd0;
+                verify_wait_cnt_q <= {VERIFY_WAIT_W{1'b0}};
+                debug_verify0_ok_q <= 1'b0;
+                debug_verify1_ok_q <= 1'b0;
+                debug_verify2_ok_q <= 1'b0;
+                debug_verify_req_seen_o <= 1'b0;
+                debug_verify_rsp_seen_o <= 1'b0;
+                send_need_cmd <= 1'b0;
+                send_need_wdf <= 1'b0;
+                state <= S_DATA;
+              end
+            end else if (len_cnt == 3'd7) begin
+              len_cnt   <= 3'd0;
               byte_cnt  <= 32'd0;
               buf_idx   <= 4'd0;
               buf_data  <= 128'd0;
               buf_mask  <= 16'hFFFF;
               curr_addr <= BOOT_ADDR;
               data_done <= 1'b0;
+              payload_crc_q <= 32'hFFFF_FFFF;
               debug_word0_q <= 32'd0;
               debug_word1_q <= 32'd0;
               debug_word2_q <= 32'd0;
@@ -686,9 +856,6 @@ module uart_bootloader #(
               send_addr_q <= 27'd0;
               send_data_q <= 128'd0;
               send_mask_q <= 16'hFFFF;
-              rx_fifo_wr_ptr_q <= {RX_FIFO_AW{1'b0}};
-              rx_fifo_rd_ptr_q <= {RX_FIFO_AW{1'b0}};
-              rx_fifo_count_q <= {(RX_FIFO_AW+1){1'b0}};
               verify_exp0_q <= 128'd0;
               verify_exp1_q <= 128'd0;
               verify_exp2_q <= 128'd0;
@@ -705,25 +872,7 @@ module uart_bootloader #(
               debug_verify_rsp_seen_o <= 1'b0;
               send_need_cmd <= 1'b0;
               send_need_wdf <= 1'b0;
-              if ({rx_fifo_rdata, bytes_total[23:0]} == 32'd0) begin
-                boot_done_o <= 1'b1;
-                state <= S_DONE;
-              end else if ({rx_fifo_rdata, bytes_total[23:0]} > MAX_BYTES) begin
-                rx_sel <= RXSEL_NOM;
-                sync_shift_div4 <= 32'd0;
-                sync_shift_div2 <= 32'd0;
-                sync_shift_nom  <= 32'd0;
-                sync_shift_mul2 <= 32'd0;
-                sync_shift_mul4 <= 32'd0;
-                sync_shift_div4_i <= 32'd0;
-                sync_shift_div2_i <= 32'd0;
-                sync_shift_nom_i  <= 32'd0;
-                sync_shift_mul2_i <= 32'd0;
-                sync_shift_mul4_i <= 32'd0;
-                state <= S_SYNC;
-              end else begin
-                state <= S_DATA;
-              end
+              state <= S_DATA;
             end else begin
               len_cnt <= len_cnt + 1'b1;
             end
@@ -743,6 +892,9 @@ module uart_bootloader #(
             sync_shift_nom_i  <= 32'd0;
             sync_shift_mul2_i <= 32'd0;
             sync_shift_mul4_i <= 32'd0;
+            expected_crc_q <= 32'd0;
+            payload_crc_q <= 32'hFFFF_FFFF;
+            protocol_v2_q <= 1'b0;
             state      <= S_SYNC;
           end else begin
             idle_cnt <= idle_cnt + 1'b1;
@@ -776,6 +928,7 @@ module uart_bootloader #(
             end
             buf_data[buf_idx*8 +: 8] <= rx_fifo_rdata;
             buf_mask[buf_idx] <= 1'b0;
+            payload_crc_q <= crc32_byte(payload_crc_q, rx_fifo_rdata);
             if (byte_cnt == (bytes_total - 1)) begin
               data_done <= 1'b1;
             end
@@ -818,6 +971,9 @@ module uart_bootloader #(
             debug_verify_rsp_seen_o <= 1'b0;
             send_need_cmd <= 1'b0;
             send_need_wdf <= 1'b0;
+            expected_crc_q <= 32'd0;
+            payload_crc_q <= 32'hFFFF_FFFF;
+            protocol_v2_q <= 1'b0;
             state      <= S_SYNC;
           end else begin
             idle_cnt <= idle_cnt + 1'b1;
@@ -839,9 +995,46 @@ module uart_bootloader #(
             idle_cnt <= {TIMEOUT_W{1'b0}};
             send_need_cmd <= 1'b0;
             send_need_wdf <= 1'b0;
-            if (data_done) begin
+            if (data_done && protocol_v2_q &&
+                ((payload_crc_q ^ 32'hFFFF_FFFF) != expected_crc_q)) begin
+              // Reject a complete but corrupted UART transfer. Do not release
+              // the CPU into an image whose first 48 bytes happened to verify.
+              boot_done_o <= 1'b0;
+              rx_sel <= RXSEL_NOM;
+              sync_shift_div4 <= 32'd0;
+              sync_shift_div2 <= 32'd0;
+              sync_shift_nom  <= 32'd0;
+              sync_shift_mul2 <= 32'd0;
+              sync_shift_mul4 <= 32'd0;
+              sync_shift_div4_i <= 32'd0;
+              sync_shift_div2_i <= 32'd0;
+              sync_shift_nom_i  <= 32'd0;
+              sync_shift_mul2_i <= 32'd0;
+              sync_shift_mul4_i <= 32'd0;
+              rx_fifo_wr_ptr_q <= {RX_FIFO_AW{1'b0}};
+              rx_fifo_rd_ptr_q <= {RX_FIFO_AW{1'b0}};
+              rx_fifo_count_q <= {(RX_FIFO_AW+1){1'b0}};
+              expected_crc_q <= 32'd0;
+              payload_crc_q <= 32'hFFFF_FFFF;
+              protocol_v2_q <= 1'b0;
+              data_done <= 1'b0;
+              if (!report_tx_busy_w) begin
+                report_tx_data_q <= 8'h15;
+                report_tx_en_q <= 1'b1;
+              end
+              state <= S_SYNC;
+            end else if (data_done) begin
               verify_idx_q <= 2'd0;
               verify_wait_cnt_q <= VERIFY_WAIT_CYCLES[VERIFY_WAIT_W-1:0];
+              verify_addr_q <= 27'd0;
+              verify_bytes_done_q <= 32'd0;
+              verify_crc_q <= 32'hFFFF_FFFF;
+              verify_beat_q <= 128'd0;
+              verify_byte_idx_q <= 4'd0;
+              verify_have_beat_q <= 1'b0;
+              debug_verify0_ok_q <= 1'b0;
+              debug_verify1_ok_q <= (bytes_total <= 32'd16);
+              debug_verify2_ok_q <= (bytes_total <= 32'd32);
               state <= S_VERIFY_REQ;
             end else begin
               curr_addr <= curr_addr + 32'd16;
@@ -908,29 +1101,71 @@ module uart_bootloader #(
           end
         end
         S_VERIFY_WAIT: begin
-          if (app_rd_data_valid && app_rd_data_end) begin
+          if (release_pending_q) begin
             idle_cnt <= {TIMEOUT_W{1'b0}};
-            debug_verify_rsp_seen_o <= 1'b1;
-            if (verify_idx_q == 2'd0)
-              verify_got0_q <= app_rd_data;
-            case (verify_idx_q)
-              2'd0: debug_verify0_ok_q <= masked_cmp128(app_rd_data, verify_exp0_q, verify_vld0_q);
-              2'd1: debug_verify1_ok_q <= masked_cmp128(app_rd_data, verify_exp1_q, verify_vld1_q);
-              default: debug_verify2_ok_q <= masked_cmp128(app_rd_data, verify_exp2_q, verify_vld2_q);
-            endcase
-            if (verify_idx_q == 2'd2) begin
-              if (debug_verify0_ok_q &&
-                  debug_verify1_ok_q &&
-                  masked_cmp128(app_rd_data, verify_exp2_q, verify_vld2_q)) begin
-                boot_done_o <= 1'b1;
-                state <= S_DONE;
+            if (report_tx_busy_w) begin
+              release_report_started_q <= 1'b1;
+            end else if (release_report_started_q) begin
+              release_pending_q <= 1'b0;
+              release_report_started_q <= 1'b0;
+              boot_done_o <= 1'b1;
+              state <= S_DONE;
+            end
+          end else if (verify_have_beat_q) begin
+            idle_cnt <= {TIMEOUT_W{1'b0}};
+            verify_crc_q <= crc32_byte(
+              verify_crc_q,
+              verify_beat_q[verify_byte_idx_q*8 +: 8]
+            );
+            verify_bytes_done_q <= verify_bytes_done_q + 1'b1;
+            if (verify_bytes_done_q == (bytes_total - 1'b1)) begin
+              verify_have_beat_q <= 1'b0;
+              if (crc32_byte(
+                    verify_crc_q,
+                    verify_beat_q[verify_byte_idx_q*8 +: 8]
+                  ) == payload_crc_q) begin
+                if (protocol_v2_q && !report_tx_busy_w) begin
+                  report_tx_data_q <= 8'h06;
+                  report_tx_en_q <= 1'b1;
+                  release_pending_q <= 1'b1;
+                  release_report_started_q <= 1'b0;
+                end else begin
+                  boot_done_o <= 1'b1;
+                  state <= S_DONE;
+                end
               end else begin
                 boot_done_o <= 1'b0;
+                if (!report_tx_busy_w) begin
+                  report_tx_data_q <= 8'h16;
+                  report_tx_en_q <= 1'b1;
+                end
                 state <= S_SYNC;
               end
-            end else begin
-              verify_idx_q <= verify_idx_q + 1'b1;
+            end else if (verify_byte_idx_q == 4'd15) begin
+              verify_have_beat_q <= 1'b0;
+              verify_byte_idx_q <= 4'd0;
+              verify_addr_q <= verify_addr_q + 27'd16;
+              verify_wait_cnt_q <= {VERIFY_WAIT_W{1'b0}};
               state <= S_VERIFY_REQ;
+            end else begin
+              verify_byte_idx_q <= verify_byte_idx_q + 1'b1;
+            end
+          end else if (app_rd_data_valid && app_rd_data_end) begin
+            idle_cnt <= {TIMEOUT_W{1'b0}};
+            debug_verify_rsp_seen_o <= 1'b1;
+            verify_beat_q <= app_rd_data;
+            verify_byte_idx_q <= 4'd0;
+            verify_have_beat_q <= 1'b1;
+            if (verify_addr_q == 27'd0) begin
+              verify_got0_q <= app_rd_data;
+              debug_verify0_ok_q <= masked_cmp128(
+                app_rd_data, verify_exp0_q, verify_vld0_q);
+            end else if (verify_addr_q == 27'd16) begin
+              debug_verify1_ok_q <= masked_cmp128(
+                app_rd_data, verify_exp1_q, verify_vld1_q);
+            end else if (verify_addr_q == 27'd32) begin
+              debug_verify2_ok_q <= masked_cmp128(
+                app_rd_data, verify_exp2_q, verify_vld2_q);
             end
           end else if (idle_cnt == TIMEOUT_CYCLES - 1) begin
             idle_cnt   <= {TIMEOUT_W{1'b0}};
@@ -987,8 +1222,11 @@ module uart_bootloader #(
             boot_done_o <= 1'b0;
             debug_sync_seen_o <= 1'b1;
             bytes_total <= 32'd0;
+            expected_crc_q <= 32'd0;
+            payload_crc_q <= 32'hFFFF_FFFF;
+            protocol_v2_q <= sync_match_v2;
             byte_cnt    <= 32'd0;
-            len_cnt     <= 2'd0;
+            len_cnt     <= 3'd0;
             buf_idx     <= 4'd0;
             buf_data    <= 128'd0;
             buf_mask    <= 16'hFFFF;

@@ -33,6 +33,10 @@
 - RTOS timer：
   - `0x4000_0020`：mtime
   - `0x4000_0028`：mtimecmp
+- 效能計數器：
+  - `0x4000_0100`：ID / INFO / CONTROL / STATUS
+  - `0x4000_0110..0x4000_01CC`：24 組 64-bit pipeline/cache/DDR/trap counters
+  - 支援 clear、start/stop、原子 snapshot 與 RTOS Console 即時分析
 - VGA framebuffer：
   - `0x5000_0000`：VGA framebuffer base
   - `0x5000_7FFC`：VGA control
@@ -87,7 +91,9 @@ make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 | Demo | 說明 |
 |---|---|
 | `rtos_smoke.mem` | UART queue producer/consumer smoke test |
+| `platform` profile | 大型軟體移植前綜合自測：heap、同步原語、timer、event/stream、診斷與 UART IRQ |
 | `console` profile | 可透過 UART 操作的正式 RTOS Console，含命令、Queue worker 與狀態監測 |
+| `lua` profile | Lua 5.4.8 + FreeRTOS UART REPL／64 KiB `.lua` 上傳器，可動態切換腳本、呼叫 `rtos.*` API，並執行 UART 互動遊戲 |
 | `rtos_vga_demo.mem` | 三個 FreeRTOS task 各自更新 VGA 左/中/右區塊 |
 | `rtos_vga_queue_demo.mem` | Producer task -> FreeRTOS Queue -> Renderer task -> VGA，另有 Heartbeat task |
 
@@ -134,12 +140,17 @@ P -> Q -> R        H
 - `RTOS_VGA_DEMO_NOTES.md`
 - `explain_files_md/RTOS_APP_RUNNER_GUIDE.md`（preflight 後自動切換任意 RTOS `.mem`）
 - `explain_files_md/RTOS_CONSOLE_GUIDE.md`（互動命令、Task/Queue 架構與實板測試）
+- `explain_files_md/RTOS_PLATFORM_V1_GUIDE.md`（大型軟體移植前置層、自測與後續介面）
+- `explain_files_md/RTOS_LUA_GUIDE.md`（Lua REPL、RTOS API、建置與實板測試）
+- `explain_files_md/MMIO_PERFORMANCE_COUNTERS_GUIDE.md`（24 組 64-bit counter ABI 與用法）
+- `explain_files_md/PERFORMANCE_ANALYSIS_RESULT.md`（50 MHz 實板量測與瓶頸分析）
 
 ## 6. 本地回歸現況
 
 近期本地回歸已驗證：
 - `make mem`：PASS
 - `make uart-mmio-tb`：PASS
+- `make perf-counter-tb`：PASS
 - `bp_redirect_scenarios_tb`：PASS
 - `icache_pipeline_tb` `TEST=1..27`：PASS
 - `TEST=24..27` 多 seed 壓測：PASS

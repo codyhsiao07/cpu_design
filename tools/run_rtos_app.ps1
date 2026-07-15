@@ -14,16 +14,29 @@ param(
   [string]$Arch = "rv32im_zicsr",
   [uint32]$CpuClockHz = 50000000,
   [int]$Baud = 115200,
-  [int]$Preamble = 8192,
+  [ValidateRange(0, 1048576)]
+  [int]$Preamble = 4096,
+  [ValidateSet("v1", "v2")]
+  [string]$Protocol = "v2",
+  [ValidateRange(1, 4096)]
+  [int]$ChunkSize = 32,
+  [ValidateRange(0.0, 1.0)]
+  [double]$ChunkDelay = 0.001,
+  [ValidateRange(0.0, 1.0)]
+  [double]$SyncSettle = 0.02,
+  [ValidateRange(0.0, 1.0)]
+  [double]$HeaderSettle = 0.005,
+  [ValidateRange(0.1, 30.0)]
+  [double]$BootAckTimeout = 2.0,
   [double]$StartupDelay = 5.0,
   [double]$PreflightTimeout = 20.0,
   [ValidateRange(1, 5)]
-  [int]$PreflightAttempts = 2,
+  [int]$PreflightAttempts = 5,
   [double]$TargetDelay = 5.0,
   [string]$TargetMarker = "",
   [double]$TargetTimeout = 20.0,
   [ValidateRange(1, 5)]
-  [int]$TargetAttempts = 2,
+  [int]$TargetAttempts = 5,
   [ValidateSet("interactive", "listen", "none")]
   [string]$Monitor = "interactive",
   [double]$ListenSeconds = 5.0,
@@ -107,6 +120,10 @@ if ([string]::IsNullOrWhiteSpace($TargetMarker)) {
     $TargetMarker = "RTOS_SMOKE_PASS"
   } elseif (($App -eq "console") -or ($targetName -match "rtos_console")) {
     $TargetMarker = "APP_READY"
+  } elseif (($App -eq "platform") -or ($targetName -match "rtos_platform")) {
+    $TargetMarker = "RTOS_PLATFORM_PASS"
+  } elseif (($App -eq "lua") -or ($targetName -match "rtos_lua")) {
+    $TargetMarker = "LUA_RTOS_READY"
   } elseif (($App -eq "vga_demo") -or ($targetName -match "vga_demo")) {
     $TargetMarker = "[VGA] task=L start"
   } elseif (($App -eq "vga_queue_demo") -or ($targetName -match "vga_queue")) {
@@ -114,6 +131,12 @@ if ([string]::IsNullOrWhiteSpace($TargetMarker)) {
   }
 }
 
+# The Lua VM performs parser, floating-point, allocator and recovery self-tests
+# on the 50 MHz board before announcing readiness. Its normal boot can exceed
+# the generic 20-second application timeout.
+if (($App -eq "lua") -and (-not $PSBoundParameters.ContainsKey("TargetTimeout"))) {
+  $TargetTimeout = 60.0
+}
 $python = Get-Command python -ErrorAction Stop
 $runnerArgs = @(
   $runner,
@@ -128,6 +151,12 @@ $runnerArgs = @(
   "--target-timeout", $TargetTimeout,
   "--target-attempts", $TargetAttempts,
   "--preamble", $Preamble,
+  "--protocol", $Protocol,
+  "--chunk-size", $ChunkSize,
+  "--chunk-delay", $ChunkDelay,
+  "--sync-settle", $SyncSettle,
+  "--header-settle", $HeaderSettle,
+  "--boot-ack-timeout", $BootAckTimeout,
   "--monitor", $Monitor,
   "--listen-seconds", $ListenSeconds
 )

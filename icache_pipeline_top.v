@@ -148,6 +148,8 @@ module icache_pipeline_top #(
   wire ui_clk;
   wire ui_clk_sync_rst;
   wire boot_done_int;
+  wire boot_uart_tx_int;
+  wire cpu_uart_tx_w;
   wire boot_edge_seen_boot_int;
   wire boot_edge_seen_int;
   wire boot_rx_seen_int;
@@ -302,6 +304,8 @@ module icache_pipeline_top #(
   wire [L2_DATA_W-1:0]   d_l2_rsp_rdata_int;
   wire                  d_l2_rsp_last_int;
   wire                  d_l2_rsp_err_int;
+  wire                  perf_ddr_read_cmd_w;
+  wire                  perf_ddr_write_cmd_w;
 
   // Uncached indicator for D$ (derived from cmd)
   wire d_l2_req_uncached = (d_l2_req_cmd == 2'b01) || (d_l2_req_cmd == 2'b10);
@@ -352,6 +356,12 @@ module icache_pipeline_top #(
       wire [15:0]  app_wdf_mask_memtest;
       wire         app_wdf_wren_memtest;
       wire         memtest_active_w;
+
+      // Count only L2-owned DDR command handshakes.  Bootloader and power-on
+      // memory-test traffic happen while the core is held in reset and are not
+      // part of application performance measurements.
+      assign perf_ddr_read_cmd_w = app_en_l2 & app_rdy & (app_cmd_l2 == 3'b001);
+      assign perf_ddr_write_cmd_w = app_en_l2 & app_rdy & (app_cmd_l2 == 3'b000);
 
       // MIG instance
       mig_7series_0 u_mig (
@@ -503,6 +513,7 @@ module icache_pipeline_top #(
           .app_rd_data       (app_rd_data),
           .app_rd_data_end   (app_rd_data_end),
           .app_rd_data_valid (app_rd_data_valid),
+          .boot_uart_tx_o    (boot_uart_tx_int),
           .boot_done_o       (boot_done_int),
           .debug_edge_seen_o (boot_edge_seen_boot_int),
           .debug_rx_seen_o   (boot_rx_seen_int),
@@ -540,6 +551,7 @@ module icache_pipeline_top #(
         assign app_wdf_wren_boot = 1'b0;
                 assign boot_active_w      = 1'b0;
         assign boot_done_int      = 1'b1;
+        assign boot_uart_tx_int   = 1'b1;
         assign boot_edge_seen_boot_int = 1'b0;
         assign boot_rx_seen_int   = 1'b0;
         assign boot_sync_seen_int = 1'b0;
@@ -582,6 +594,8 @@ module icache_pipeline_top #(
       assign app_wdf_wren = memtest_active_w ? app_wdf_wren_memtest :
                             (boot_active_w ? app_wdf_wren_boot : app_wdf_wren_l2);
     end else begin : GEN_NO_MIG
+      assign perf_ddr_read_cmd_w = 1'b0;
+      assign perf_ddr_write_cmd_w = 1'b0;
       assign init_calib_complete = 1'b1;
       assign ui_clk = clk;
       assign ui_clk_sync_rst = 1'b0;
@@ -589,6 +603,7 @@ module icache_pipeline_top #(
       assign core_clk            = clk;
       assign core_rst_n_base     = rst_n;
       assign boot_done_int       = 1'b1;
+      assign boot_uart_tx_int    = 1'b1;
       assign boot_edge_seen_boot_int = 1'b0;
       assign boot_rx_seen_int    = 1'b0;
       assign boot_sync_seen_int  = 1'b0;
@@ -1543,6 +1558,7 @@ module icache_pipeline_top #(
   //   0x4000_0024 read/write -> MTIME high 32 bits
   //   0x4000_0028 read/write -> MTIMECMP low 32 bits
   //   0x4000_002C read/write -> MTIMECMP high 32 bits
+  //   0x4000_0100..0x4000_01CC -> 24 x 64-bit performance counter bank
   // Other addresses in the region return an error response.
   localparam [31:0] UART_MMIO_BASE   = 32'h4000_0000;
   localparam [31:0] UART_MMIO_TX_STATUS = 32'h4000_0004;
@@ -1556,6 +1572,7 @@ module icache_pipeline_top #(
   localparam [31:0] UART_MMIO_MTIME_HI        = 32'h4000_0024;
   localparam [31:0] UART_MMIO_MTIMECMP_LO     = 32'h4000_0028;
   localparam [31:0] UART_MMIO_MTIMECMP_HI     = 32'h4000_002C;
+  localparam [31:0] PERF_MMIO_BASE             = 32'h4000_0100;
   localparam [31:0] VGA_MMIO_BASE    = 32'h5000_0000;
   localparam [31:0] VGA_MMIO_LAST    = 32'h5000_7FFF;
 
@@ -1584,6 +1601,12 @@ module icache_pipeline_top #(
       (dmem_addr_o[31:2] == UART_MMIO_MTIMECMP_LO[31:2]);
   wire        uart_mmio_sel_mtimecmp_hi =
       (dmem_addr_o[31:2] == UART_MMIO_MTIMECMP_HI[31:2]);
+  wire        perf_mmio_hit =
+      (dmem_addr_o[31:8] == PERF_MMIO_BASE[31:8]);
+  wire        perf_mmio_ready;
+  wire        perf_mmio_rsp_valid;
+  wire        perf_mmio_rsp_err;
+  wire [31:0] perf_mmio_rdata;
   wire        uart_mmio_addr_valid =
       uart_mmio_sel_tx_data |
       uart_mmio_sel_tx_status |
@@ -1625,6 +1648,7 @@ module icache_pipeline_top #(
 
   wire uart_mmio_ready =
       ~uart_mmio_req_valid ? 1'b0 :
+      perf_mmio_hit ? perf_mmio_ready :
       (dmem_we_o && uart_mmio_sel_tx_data && uart_mmio_has_byte) ? ~uart_tx_busy :
       1'b1;
   wire uart_mmio_fire = uart_mmio_req_valid & uart_mmio_ready;
@@ -1639,8 +1663,13 @@ module icache_pipeline_top #(
                      uart_mmio_sel_mtimecmp_hi) | ~uart_mmio_has_byte);
   wire uart_mmio_read_err =
       (~dmem_we_o) & (~uart_mmio_addr_valid);
-  wire uart_mmio_rsp_err = uart_mmio_fire & (uart_mmio_write_err | uart_mmio_read_err);
+  wire uart_mmio_nonperf_fire = uart_mmio_fire & ~perf_mmio_hit;
+  wire uart_mmio_nonperf_rsp_err =
+      uart_mmio_nonperf_fire & (uart_mmio_write_err | uart_mmio_read_err);
+  wire uart_mmio_rsp_err = perf_mmio_rsp_valid ? perf_mmio_rsp_err :
+                           uart_mmio_nonperf_rsp_err;
   wire [31:0] uart_mmio_rsp_rdata =
+      perf_mmio_rsp_valid ? perf_mmio_rdata :
       uart_mmio_sel_tx_status ? {31'd0, ~uart_tx_busy} :
       uart_mmio_sel_rx_data   ? {24'd0, uart_rx_data_q} :
       uart_mmio_sel_rx_status ? {30'd0, uart_rx_overrun_q, uart_rx_valid_q} :
@@ -1652,7 +1681,7 @@ module icache_pipeline_top #(
       uart_mmio_sel_mtimecmp_lo ? irq_mtimecmp_lo_w :
       uart_mmio_sel_mtimecmp_hi ? irq_mtimecmp_hi_w :
       32'd0;
-  wire uart_mmio_rsp_valid = uart_mmio_fire;
+  wire uart_mmio_rsp_valid = uart_mmio_nonperf_fire | perf_mmio_rsp_valid;
   wire uart_mmio_tx_fire =
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_tx_data & uart_mmio_has_byte;
   assign uart_mmio_launcher_reset_fire =
@@ -1669,6 +1698,8 @@ module icache_pipeline_top #(
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtimecmp_lo & uart_mmio_has_byte;
   wire uart_mmio_mtimecmp_hi_fire =
       uart_mmio_fire & dmem_we_o & uart_mmio_sel_mtimecmp_hi & uart_mmio_has_byte;
+  wire perf_mmio_fire =
+      uart_mmio_fire & perf_mmio_hit;
   wire uart_mmio_rx_pop =
       uart_mmio_fire & (~dmem_we_o) & uart_mmio_sel_rx_data;
   wire uart_mmio_rx_status_read =
@@ -1800,9 +1831,13 @@ module icache_pipeline_top #(
     .Tx_en   (uart_tx_en_q),
     .clk_50m (core_clk),
     .rst_n   (core_rst_n),
-    .Tx      (uart_tx_o),
+    .Tx      (cpu_uart_tx_w),
     .Tx_busy (uart_tx_busy)
   );
+
+  // Before CPU release, the loader owns UART TX so CRC/readback rejection can
+  // be reported. After acceptance, application UART output owns the pin.
+  assign uart_tx_o = boot_done_int ? cpu_uart_tx_w : boot_uart_tx_int;
 
   machine_irq_sources u_irq_sources (
     .clk              (core_clk),
@@ -2007,6 +2042,60 @@ module icache_pipeline_top #(
   assign flush_ifid  = flush_ifid_hdu | sys_flush_now;
   assign flush_idex  = flush_idex_hdu | sys_flush_now;
 
+  // ================= MMIO performance counters =================
+  // Event indices are part of the software ABI; keep them synchronized with
+  // OS/rtos/src/perf_counters.h.
+  wire [23:0] perf_events_w;
+  wire perf_ex_accept_w = ex_valid & ~stall_ex;
+  wire perf_load_use_hazard_w = id_valid & ex_valid & ex_mem_read &
+      (ex_rd != 5'd0) & ((id_rs1 == ex_rd) | (id_rs2 == ex_rd));
+
+  assign perf_events_w[0]  = 1'b1; // core cycles
+  assign perf_events_w[1]  = wb_valid; // retired instructions
+  assign perf_events_w[2]  = stall_if; // front-end stall cycles
+  assign perf_events_w[3]  = mem_stall; // back-end/memory stall cycles
+  assign perf_events_w[4]  = perf_load_use_hazard_w;
+  assign perf_events_w[5]  = ex_stall_o; // multi-cycle EX busy cycles
+  assign perf_events_w[6]  = perf_ex_accept_w & ex_branch;
+  assign perf_events_w[7]  = perf_ex_accept_w & ex_branch & ex_br_taken;
+  assign perf_events_w[8]  = perf_ex_accept_w & (ex_jal | ex_jalr);
+  assign perf_events_w[9]  = redirect_valid; // direction or target miss
+  assign perf_events_w[10] = perf_ex_accept_w & ex_mem_read;
+  assign perf_events_w[11] = perf_ex_accept_w & ex_mem_write;
+  assign perf_events_w[12] = fetch_req_hs;
+  assign perf_events_w[13] = l2_req_valid & i_l2_req_ready_int &
+                              (l2_req_cmd == 2'b00);
+  assign perf_events_w[14] = dcache_cpu_req_valid & dcache_cpu_req_ready;
+  assign perf_events_w[15] = d_l2_req_valid & d_l2_req_ready_int &
+                              ((d_l2_req_cmd == 2'b00) | (d_l2_req_cmd == 2'b10));
+  assign perf_events_w[16] = d_l2_req_valid & d_l2_req_ready_int &
+                              (d_l2_req_cmd == 2'b11);
+  assign perf_events_w[17] = uart_mmio_rsp_valid & ~dmem_we_o & ~uart_mmio_rsp_err;
+  assign perf_events_w[18] = uart_mmio_rsp_valid & dmem_we_o & ~uart_mmio_rsp_err;
+  assign perf_events_w[19] = perf_ddr_read_cmd_w;
+  assign perf_events_w[20] = perf_ddr_write_cmd_w;
+  assign perf_events_w[21] = sync_trap_valid;
+  assign perf_events_w[22] = irq_take_effective;
+  assign perf_events_w[23] = redirect_valid | sys_flush_now;
+
+  mmio_performance_counters #(
+    .COUNTER_COUNT (24),
+    .VERSION       (16'h0001)
+  ) u_perf_counters (
+    .clk             (core_clk),
+    .rst_n           (core_rst_n),
+    .event_i         (perf_events_w),
+    .req_fire_i      (perf_mmio_fire),
+    .we_i            (dmem_we_o),
+    .word_addr_i     (dmem_addr_o[7:2]),
+    .wdata_i         (dmem_wdata_o),
+    .wstrb_i         (dmem_wstrb_o),
+    .req_ready_o     (perf_mmio_ready),
+    .rsp_valid_o     (perf_mmio_rsp_valid),
+    .rsp_err_o       (perf_mmio_rsp_err),
+    .rdata_o         (perf_mmio_rdata)
+  );
+
 `ifndef SYNTHESIS
   reg ifdbg_en;
   integer ifdbg_cnt;
@@ -2033,6 +2122,131 @@ module icache_pipeline_top #(
   end
 `endif
 
+endmodule
+
+// Atomic, software-controlled MMIO performance counter bank.
+//
+// Word map relative to 0x4000_0100:
+//   0x00 ID      ("PERF")
+//   0x04 INFO    ([31:16] version, [7:0] counter count)
+//   0x08 CONTROL (R: bit0 enable; W: bit0 enable, bit1 clear,
+//                 bit2 snapshot, bit3 release snapshot)
+//   0x0C STATUS  (bit0 enable, bit1 snapshot valid, bit2 overflow seen)
+//   0x10..       counter low/high pairs
+//
+// A snapshot copies all live counters on one clock edge.  While it is valid,
+// reads use the shadow bank, so low/high reads can never tear even while the
+// live counters continue to run.
+module mmio_performance_counters #(
+  parameter integer COUNTER_COUNT = 24,
+  parameter [15:0] VERSION = 16'h0001
+) (
+  input                         clk,
+  input                         rst_n,
+  input      [COUNTER_COUNT-1:0] event_i,
+  input                         req_fire_i,
+  input                         we_i,
+  input      [5:0]              word_addr_i,
+  input      [31:0]             wdata_i,
+  input      [3:0]              wstrb_i,
+  output                        req_ready_o,
+  output reg                    rsp_valid_o,
+  output reg                    rsp_err_o,
+  output reg [31:0]             rdata_o
+);
+  localparam [31:0] PERF_ID = 32'h5045_5246; // ASCII "PERF"
+  localparam integer LAST_COUNTER_WORD = 4 + (COUNTER_COUNT * 2) - 1;
+
+  reg [63:0] live_count_q [0:COUNTER_COUNT-1];
+  reg [63:0] snapshot_count_q [0:COUNTER_COUNT-1];
+  reg        enable_q;
+  reg        snapshot_valid_q;
+  reg [COUNTER_COUNT-1:0] overflow_seen_q;
+  integer    i;
+
+  wire control_write = req_fire_i & we_i & (word_addr_i == 6'd2) & wstrb_i[0];
+  wire clear_cmd = control_write & wdata_i[1];
+  wire snapshot_cmd = control_write & wdata_i[2];
+  wire release_cmd = control_write & wdata_i[3];
+  wire [5:0] counter_read_index = (word_addr_i - 6'd4) >> 1;
+
+  // PERF requests are deliberately answered one cycle after acceptance.  The
+  // registered boundary prevents the 24-way read mux and control decode from
+  // loading the core MEM-address/control timing paths.
+  assign req_ready_o = ~rsp_valid_o;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      enable_q <= 1'b1;
+      snapshot_valid_q <= 1'b0;
+      overflow_seen_q <= {COUNTER_COUNT{1'b0}};
+      rsp_valid_o <= 1'b0;
+      rsp_err_o <= 1'b0;
+      rdata_o <= 32'd0;
+      for (i = 0; i < COUNTER_COUNT; i = i + 1) begin
+        live_count_q[i] <= 64'd0;
+        snapshot_count_q[i] <= 64'd0;
+      end
+    end else begin
+      rsp_valid_o <= 1'b0;
+      rsp_err_o <= 1'b0;
+      if (req_fire_i) begin
+        rsp_valid_o <= 1'b1;
+        rdata_o <= 32'd0;
+        if (we_i) begin
+          if (!((word_addr_i == 6'd2) && wstrb_i[0]))
+            rsp_err_o <= 1'b1;
+        end else if (word_addr_i <= 6'd3) begin
+          case (word_addr_i)
+            6'd0: rdata_o <= PERF_ID;
+            6'd1: rdata_o <= {VERSION, 8'd0, COUNTER_COUNT[7:0]};
+            6'd2: rdata_o <= {31'd0, enable_q};
+            default: rdata_o <= {VERSION, 8'd0, 5'd0,
+                                 |overflow_seen_q, snapshot_valid_q, enable_q};
+          endcase
+        end else if (word_addr_i <= LAST_COUNTER_WORD[5:0]) begin
+          if (snapshot_valid_q)
+            rdata_o <= word_addr_i[0] ?
+                       snapshot_count_q[counter_read_index][63:32] :
+                       snapshot_count_q[counter_read_index][31:0];
+          else
+            rdata_o <= word_addr_i[0] ?
+                       live_count_q[counter_read_index][63:32] :
+                       live_count_q[counter_read_index][31:0];
+        end else begin
+          rsp_err_o <= 1'b1;
+        end
+      end
+
+      if (control_write)
+        enable_q <= wdata_i[0];
+
+      if (clear_cmd) begin
+        snapshot_valid_q <= 1'b0;
+        overflow_seen_q <= {COUNTER_COUNT{1'b0}};
+        for (i = 0; i < COUNTER_COUNT; i = i + 1)
+          live_count_q[i] <= 64'd0;
+      end else begin
+        if (enable_q) begin
+          for (i = 0; i < COUNTER_COUNT; i = i + 1) begin
+            if (event_i[i]) begin
+              live_count_q[i] <= live_count_q[i] + 64'd1;
+              if (live_count_q[i] == 64'hFFFF_FFFF_FFFF_FFFF)
+                overflow_seen_q[i] <= 1'b1;
+            end
+          end
+        end
+
+        if (snapshot_cmd) begin
+          snapshot_valid_q <= 1'b1;
+          for (i = 0; i < COUNTER_COUNT; i = i + 1)
+            snapshot_count_q[i] <= live_count_q[i];
+        end else if (release_cmd) begin
+          snapshot_valid_q <= 1'b0;
+        end
+      end
+    end
+  end
 endmodule
 
 module ddr_app_memtest #(

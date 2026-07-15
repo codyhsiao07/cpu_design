@@ -627,6 +627,8 @@ module icache_pipeline_tb;
           uart_pass_window = {uart_pass_window[(8*18)-1:0], uart_mon_byte};
           if ((uart_pass_window[(8*15)-1:0] == "RTOS_SMOKE_PASS") ||
               (uart_pass_window == "RTOS_PREFLIGHT_PASS") ||
+              (uart_pass_window[(8*18)-1:0] == "RTOS_PLATFORM_PASS") ||
+              (uart_pass_window[(8*14)-1:0] == "LUA_RTOS_READY") ||
               (uart_pass_window[(8*9)-1:0] == "APP_READY")) begin
             rtos_pass_seen = 1;
           end

@@ -39,6 +39,10 @@ module uart_bootloader_tb;
   reg [127:0] mem2 = 128'd0;
   reg rd_pending = 1'b0;
   reg [1:0] rd_addr_q = 2'd0;
+  reg crc_nak_seen = 1'b0;
+  reg ddr_nak_seen = 1'b0;
+  reg boot_ack_seen = 1'b0;
+  reg corrupt_next_write = 1'b0;
 
   uart_bootloader #(
     .CLK_HZ(TB_CLK_HZ),
@@ -88,10 +92,11 @@ module uart_bootloader_tb;
       last_wdf_data <= app_wdf_data;
       last_wdf_mask <= app_wdf_mask;
       case (app_addr[5:4])
-        2'd0: mem0 <= app_wdf_data;
-        2'd1: mem1 <= app_wdf_data;
-        default: mem2 <= app_wdf_data;
+        2'd0: mem0 <= corrupt_next_write ? (app_wdf_data ^ 128'd1) : app_wdf_data;
+        2'd1: mem1 <= corrupt_next_write ? (app_wdf_data ^ 128'd1) : app_wdf_data;
+        default: mem2 <= corrupt_next_write ? (app_wdf_data ^ 128'd1) : app_wdf_data;
       endcase
+      corrupt_next_write <= 1'b0;
     end
     if (app_en && (app_cmd == 3'b001)) begin
       rd_pending <= 1'b1;
@@ -108,6 +113,12 @@ module uart_bootloader_tb;
         default: app_rd_data <= mem2;
       endcase
     end
+    if (dut.report_tx_en_q && (dut.report_tx_data_q == 8'h15))
+      crc_nak_seen <= 1'b1;
+    if (dut.report_tx_en_q && (dut.report_tx_data_q == 8'h16))
+      ddr_nak_seen <= 1'b1;
+    if (dut.report_tx_en_q && (dut.report_tx_data_q == 8'h06))
+      boot_ack_seen <= 1'b1;
   end
 
   task automatic fail;
@@ -154,14 +165,16 @@ module uart_bootloader_tb;
     init_calib_complete = 1'b1;
     repeat (CLKS_PER_BIT * 2) @(posedge clk);
 
-    send_word_le(32'hC0DE5A5A);
+    // Protocol v2 includes the zlib-compatible payload CRC in the header.
+    send_word_le(32'hC0DE5A5B);
     send_word_le(32'd4);
+    send_word_le(32'h77F29DD1);
     send_byte(8'h11);
     send_byte(8'h22);
     send_byte(8'h33);
     send_byte(8'h44);
 
-    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    repeat (CLKS_PER_BIT * 30) @(posedge clk);
 
     if (!debug_rst_released_o)
       fail("bootloader reset never released");
@@ -183,6 +196,8 @@ module uart_bootloader_tb;
       fail("bootloader did not finish in S_DONE");
     if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
       fail("bootloader readback verification did not pass");
+    if (!boot_ack_seen)
+      fail("valid v2 image did not report loader ACK");
 
     // A launcher-requested rearm must return the loader to sync search so a
     // second image can replace the first one without power-cycling the FPGA.
@@ -200,7 +215,7 @@ module uart_bootloader_tb;
     send_byte(8'hC3);
     send_byte(8'h3C);
 
-    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    repeat (CLKS_PER_BIT * 30) @(posedge clk);
     if (!boot_done_o)
       fail("bootloader never completed the second image");
     if (last_wdf_data[31:0] !== 32'h3CC35AA5)
@@ -208,17 +223,54 @@ module uart_bootloader_tb;
     if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
       fail("second image readback verification did not pass");
 
-    // A fresh protocol SYNC must also recover directly from S_DONE. This is
-    // the host-side escape hatch when the running CPU is wedged and therefore
-    // cannot request a software rearm.
-    send_word_le(32'hC0DE5A5A);
+    // A v2 frame with a mismatched CRC must never release the CPU, even though
+    // its DDR prefix readback would otherwise match what the loader received.
+    send_word_le(32'hC0DE5A5B);
     send_word_le(32'd4);
+    send_word_le(32'hB51D571D); // CRC32 of CA FE BA BE
+    send_byte(8'hCA);
+    send_byte(8'hFE);
+    send_byte(8'hBA);
+    send_byte(8'hBF);           // intentionally corrupted final byte
+
+    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    if (boot_done_o)
+      fail("CRC-corrupted v2 image released the CPU");
+    if (debug_state_o !== 3'd1)
+      fail("CRC-corrupted v2 image did not return to S_SYNC");
+    if (!crc_nak_seen)
+      fail("CRC-corrupted v2 image did not report loader NAK");
+
+    // A correct UART frame whose DDR contents are altered must also be
+    // rejected by the full-image DDR readback CRC.
+    corrupt_next_write = 1'b1;
+    send_word_le(32'hC0DE5A5B);
+    send_word_le(32'd4);
+    send_word_le(32'hB51D571D); // CRC32 of CA FE BA BE
+    send_byte(8'hCA);
+    send_byte(8'hFE);
+    send_byte(8'hBA);
+    send_byte(8'hBE);
+
+    repeat (CLKS_PER_BIT * 30) @(posedge clk);
+    if (boot_done_o)
+      fail("DDR-corrupted v2 image released the CPU");
+    if (debug_state_o !== 3'd1)
+      fail("DDR-corrupted v2 image did not return to S_SYNC");
+    if (!ddr_nak_seen)
+      fail("DDR-corrupted v2 image did not report readback NAK");
+
+    // A fresh v2 SYNC must recover directly after the CRC rejection. This is
+    // also the host-side escape hatch when a running CPU is wedged.
+    send_word_le(32'hC0DE5A5B);
+    send_word_le(32'd4);
+    send_word_le(32'h7C9CA35A);
     send_byte(8'hDE);
     send_byte(8'hAD);
     send_byte(8'hBE);
     send_byte(8'hEF);
 
-    repeat (CLKS_PER_BIT * 12) @(posedge clk);
+    repeat (CLKS_PER_BIT * 30) @(posedge clk);
     if (!boot_done_o)
       fail("bootloader never completed host-sync recovery image");
     if (last_wdf_data[31:0] !== 32'hEFBEADDE)
@@ -226,7 +278,7 @@ module uart_bootloader_tb;
     if (!debug_verify0_ok_o || !debug_verify1_ok_o || !debug_verify2_ok_o)
       fail("host-sync recovery readback verification did not pass");
 
-    $display("[TB] PASS: rearm and host-sync recovery images passed readback verification.");
+    $display("[TB] PASS: v1/v2, UART/DDR CRC rejection, rearm, and host-sync recovery passed.");
     $finish(0);
   end
 endmodule

@@ -44,7 +44,7 @@ ELF      := $(BUILD_DIR)/$(OUT_NAME).elf
 BIN      := $(BUILD_DIR)/$(OUT_NAME).bin
 DISASM   := $(BUILD_DIR)/$(OUT_NAME).dis
 
-.PHONY: help all check-tools print-config elf bin mem games-menu vga-games-menu tetris-vga gomoku-vga breakout-vga snake-vga mines-vga bomber-vga sokoban-vga pacman-vga chess-vga disasm run-sim uart-mmio-tb vga-subsystem-tb clean
+.PHONY: help all check-tools print-config elf bin mem games-menu vga-games-menu tetris-vga gomoku-vga breakout-vga snake-vga mines-vga bomber-vga sokoban-vga pacman-vga chess-vga disasm run-sim uart-mmio-tb perf-counter-tb vga-subsystem-tb clean
 
 .DEFAULT_GOAL := all
 
@@ -68,6 +68,7 @@ help:
 	@echo "  make disasm       : generate disassembly ($(DISASM))"
 	@echo "  make run-sim      : run main TB with +MEMFILE=$(MEM_OUT)"
 	@echo "  make uart-mmio-tb : run dedicated UART MMIO regression TB"
+	@echo "  make perf-counter-tb : run 64-bit performance counter unit TB"
 	@echo "  make vga-subsystem-tb : run VGA framebuffer/MMIO regression TB"
 	@echo "  make clean        : remove build outputs"
 	@echo ""
@@ -189,6 +190,10 @@ run-sim: $(MEM_OUT)
 uart-mmio-tb: | $(BUILD_DIR)
 	iverilog -g2005-sv -DFAST_SIM -i -o $(BUILD_DIR)/uart_mmio_tb.out -s uart_mmio_tb *.v
 	vvp $(BUILD_DIR)/uart_mmio_tb.out
+
+perf-counter-tb: | $(BUILD_DIR)
+	iverilog -g2005-sv -i -o $(BUILD_DIR)/performance_counters_tb.out -s performance_counters_tb performance_counters_tb.v icache_pipeline_top.v
+	vvp $(BUILD_DIR)/performance_counters_tb.out
 
 vga-subsystem-tb: | $(BUILD_DIR)
 	iverilog -g2005-sv -o $(BUILD_DIR)/vga_subsystem_tb.out -s vga_subsystem_tb vga_subsystem_tb.v vga_subsystem.v clkdiv.v vga_640x480.v vga_initials.v

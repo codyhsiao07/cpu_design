@@ -7,6 +7,7 @@ import struct
 import sys
 import threading
 import time
+import zlib
 
 try:
     import serial  # type: ignore
@@ -18,8 +19,12 @@ try:
 except ImportError:
     msvcrt = None
 
+from uart_keys import windows_key_to_uart
 
-SYNC_WORD = 0xC0DE5A5A
+
+SYNC_WORD_V1 = 0xC0DE5A5A
+SYNC_WORD_V2 = 0xC0DE5A5B
+SYNC_WORD = SYNC_WORD_V2
 DEFAULT_PASS_MARKER = b"RTOS_PREFLIGHT_PASS"
 DEFAULT_FAILURE_MARKERS = (
     b"RTOS_PREFLIGHT_FAIL",
@@ -29,6 +34,12 @@ DEFAULT_FAILURE_MARKERS = (
 )
 DEFAULT_TARGET_FAILURE_MARKERS = (
     b"[RTOS] fatal",
+    b"[RTOS] exception",
+    b"[RTOS] unexpected interrupt",
+    b"[PLATFORM] FAIL",
+    b"[LUA] FATAL",
+    b"[LUA] PANIC",
+    b"[LUA] abort",
     b"[VGA] fatal",
     b"[PIPE] fatal",
     b"[TRAP]",
@@ -41,6 +52,10 @@ class PreflightError(RuntimeError):
 
 
 class MarkerTimeout(PreflightError):
+    pass
+
+
+class BootloaderReject(PreflightError):
     pass
 
 
@@ -63,19 +78,73 @@ def load_mem(path):
     return bytes(data)
 
 
-def image_frame(payload):
-    return struct.pack("<II", SYNC_WORD, len(payload)) + payload
+def payload_crc32(payload):
+    return zlib.crc32(payload) & 0xFFFFFFFF
 
 
-def send_image(ser, payload, preamble=8192):
+def image_header(payload, protocol="v2"):
+    if protocol == "v1":
+        return struct.pack("<II", SYNC_WORD_V1, len(payload))
+    if protocol == "v2":
+        return struct.pack(
+            "<III", SYNC_WORD_V2, len(payload), payload_crc32(payload)
+        )
+    raise ValueError(f"unknown boot protocol {protocol!r}")
+
+
+def image_frame(payload, protocol="v2"):
+    return image_header(payload, protocol=protocol) + payload
+
+
+def write_all(ser, data):
+    offset = 0
+    while offset < len(data):
+        written = ser.write(data[offset:])
+        if written is None:
+            written = len(data) - offset
+        if written <= 0:
+            raise OSError("serial write made no progress")
+        offset += written
+
+
+def send_image(
+    ser,
+    payload,
+    preamble=4096,
+    protocol="v2",
+    chunk_size=32,
+    chunk_delay=0.001,
+    sync_settle=0.02,
+    header_settle=0.005,
+):
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
     remaining = max(0, int(preamble))
     leader = b"\x55" * 4096
     while remaining:
         count = min(remaining, len(leader))
-        ser.write(leader[:count])
+        write_all(ser, leader[:count])
         remaining -= count
-    ser.write(image_frame(payload))
     ser.flush()
+
+    # Split takeover, header, and payload into explicit phases. In S_DONE the
+    # sync word revokes DDR ownership from a running CPU; this short gap lets
+    # core reset and the MIG mux settle before header/payload traffic arrives.
+    header = image_header(payload, protocol=protocol)
+    write_all(ser, header[:4])
+    ser.flush()
+    if sync_settle > 0:
+        time.sleep(sync_settle)
+    write_all(ser, header[4:])
+    ser.flush()
+    if header_settle > 0:
+        time.sleep(header_settle)
+
+    for offset in range(0, len(payload), chunk_size):
+        write_all(ser, payload[offset : offset + chunk_size])
+        ser.flush()
+        if chunk_delay > 0 and offset + chunk_size < len(payload):
+            time.sleep(chunk_delay)
 
 
 def _default_rx_sink(chunk):
@@ -90,19 +159,44 @@ def wait_for_marker(
     failure_markers,
     stage,
     rx_sink=_default_rx_sink,
+    boot_ack_timeout=None,
 ):
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    started_at = time.monotonic()
+    deadline = started_at + max(0.0, timeout_seconds)
+    ack_deadline = (
+        started_at + max(0.0, boot_ack_timeout)
+        if boot_ack_timeout is not None
+        else None
+    )
+    ack_seen = False
     history = bytearray()
     ser.timeout = min(0.1, max(0.01, timeout_seconds))
 
     while time.monotonic() < deadline:
+        if ack_deadline is not None and not ack_seen and time.monotonic() >= ack_deadline:
+            raise BootloaderReject(
+                f"{stage} upload received no bootloader ACK/NAK within "
+                f"{boot_ack_timeout:.1f}s"
+            )
         chunk = ser.read(4096)
         if not chunk:
             continue
-        rx_sink(chunk)
+        ack_seen = ack_seen or (b"\x06" in chunk)
+        clean_chunk = chunk.replace(b"\x06", b"").replace(b"\x15", b"").replace(b"\x16", b"")
+        if clean_chunk:
+            rx_sink(clean_chunk)
         history += chunk
         if len(history) > 16384:
             del history[:-16384]
+
+        if b"\x15" in history:
+            raise BootloaderReject(
+                f"{stage} upload was rejected by bootloader CRC32 verification"
+            )
+        if b"\x16" in history:
+            raise BootloaderReject(
+                f"{stage} upload was rejected by bootloader DDR readback verification"
+            )
 
         for marker in failure_markers:
             if marker and marker in history:
@@ -118,7 +212,9 @@ def wait_for_marker(
     )
 
 
-def wait_for_preflight(ser, timeout_seconds, rx_sink=_default_rx_sink):
+def wait_for_preflight(
+    ser, timeout_seconds, rx_sink=_default_rx_sink, boot_ack_timeout=None
+):
     return wait_for_marker(
         ser,
         timeout_seconds=timeout_seconds,
@@ -126,6 +222,7 @@ def wait_for_preflight(ser, timeout_seconds, rx_sink=_default_rx_sink):
         failure_markers=DEFAULT_FAILURE_MARKERS,
         stage="preflight",
         rx_sink=rx_sink,
+        boot_ack_timeout=boot_ack_timeout,
     )
 
 
@@ -149,44 +246,75 @@ def write_paced(ser, data, char_delay=0.002):
 def request_console_reload(ser, char_delay=0.002):
     # A leading CR clears any partially typed line from an earlier terminal.
     # A bootloader that is already waiting simply ignores these non-sync bytes.
-    write_paced(ser, b"\rreload\r", char_delay=char_delay)
+    write_paced(ser, b"\rreload\r\n", char_delay=char_delay)
 
 
 def run_two_stage(
     ser,
     preflight_payload,
     target_payload,
-    preamble=8192,
+    preamble=4096,
+    protocol="v2",
+    chunk_size=32,
+    chunk_delay=0.001,
+    sync_settle=0.02,
+    header_settle=0.005,
     preflight_timeout=20.0,
     target_delay=5.0,
     preflight_attempts=1,
+    boot_ack_timeout=2.0,
     retry_delay=0.5,
     rx_sink=_default_rx_sink,
     status_sink=None,
 ):
     attempts = max(1, int(preflight_attempts))
     for attempt in range(1, attempts + 1):
-        send_image(ser, preflight_payload, preamble=preamble)
+        send_image(
+            ser,
+            preflight_payload,
+            preamble=preamble,
+            protocol=protocol,
+            chunk_size=chunk_size,
+            chunk_delay=chunk_delay,
+            sync_settle=sync_settle,
+            header_settle=header_settle,
+        )
         try:
             wait_for_preflight(
                 ser,
                 timeout_seconds=preflight_timeout,
                 rx_sink=rx_sink,
+                boot_ack_timeout=(boot_ack_timeout if protocol == "v2" else None),
             )
             break
-        except MarkerTimeout:
+        except (MarkerTimeout, BootloaderReject) as exc:
             if attempt >= attempts:
                 raise
             if status_sink is not None:
-                status_sink(
-                    f"Preflight attempt {attempt}/{attempts} timed out; retrying upload..."
+                reason = (
+                    f"rejected ({exc})"
+                    if isinstance(exc, BootloaderReject)
+                    else "timed out"
                 )
-            pump_rx_for(ser, retry_delay, rx_sink=rx_sink)
+                status_sink(
+                    f"Preflight attempt {attempt}/{attempts} {reason}; retrying upload..."
+                )
+            if not isinstance(exc, BootloaderReject):
+                pump_rx_for(ser, retry_delay, rx_sink=rx_sink)
 
     # The preflight drains UART TX, then hardware uses a 100 ms arm interval
     # before bootloader rearm. Keep receiving during a conservative margin.
     pump_rx_for(ser, target_delay, rx_sink=rx_sink)
-    send_image(ser, target_payload, preamble=preamble)
+    send_image(
+        ser,
+        target_payload,
+        preamble=preamble,
+        protocol=protocol,
+        chunk_size=chunk_size,
+        chunk_delay=chunk_delay,
+        sync_settle=sync_settle,
+        header_settle=header_settle,
+    )
 
 
 def confirm_target_with_retries(
@@ -194,8 +322,14 @@ def confirm_target_with_retries(
     target_payload,
     target_marker,
     target_timeout,
-    preamble=8192,
+    preamble=4096,
+    protocol="v2",
+    chunk_size=32,
+    chunk_delay=0.001,
+    sync_settle=0.02,
+    header_settle=0.005,
     target_attempts=1,
+    boot_ack_timeout=2.0,
     retry_delay=5.0,
     rx_sink=_default_rx_sink,
     status_sink=None,
@@ -210,6 +344,26 @@ def confirm_target_with_retries(
                 failure_markers=DEFAULT_TARGET_FAILURE_MARKERS,
                 stage="target",
                 rx_sink=rx_sink,
+                boot_ack_timeout=(boot_ack_timeout if protocol == "v2" else None),
+            )
+        except BootloaderReject as exc:
+            if attempt >= attempts:
+                raise
+            if status_sink is not None:
+                status_sink(
+                    f"Target attempt {attempt}/{attempts} was rejected by bootloader "
+                    f"({exc}); "
+                    "retrying CRC-protected upload..."
+                )
+            send_image(
+                ser,
+                target_payload,
+                preamble=preamble,
+                protocol=protocol,
+                chunk_size=chunk_size,
+                chunk_delay=chunk_delay,
+                sync_settle=sync_settle,
+                header_settle=header_settle,
             )
         except MarkerTimeout:
             if attempt >= attempts:
@@ -219,12 +373,21 @@ def confirm_target_with_retries(
                     f"Target attempt {attempt}/{attempts} timed out; "
                     "requesting reload and retrying upload..."
                 )
-            # If the target did start but its marker was lost, this returns a
-            # compatible Console to the loader. If it never started, the
+            # If the target did start but its marker was lost, this asks any
+            # compatible RTOS application to return to the loader. If it never started, the
             # waiting bootloader safely ignores the non-sync command bytes.
             request_console_reload(ser)
             pump_rx_for(ser, retry_delay, rx_sink=rx_sink)
-            send_image(ser, target_payload, preamble=preamble)
+            send_image(
+                ser,
+                target_payload,
+                preamble=preamble,
+                protocol=protocol,
+                chunk_size=chunk_size,
+                chunk_delay=chunk_delay,
+                sync_settle=sync_settle,
+                header_settle=header_settle,
+            )
 
 
 def listen_for_rx(ser, idle_seconds, rx_sink=_default_rx_sink):
@@ -262,10 +425,12 @@ def interactive_terminal(ser, rx_sink=_default_rx_sink):
                 char = msvcrt.getwch()
                 if char == "\x03":
                     raise KeyboardInterrupt
-                if char == "\r":
-                    write_paced(ser, b"\r\n")
-                elif char != "\x08":
-                    write_paced(ser, char.encode("ascii", errors="ignore"))
+                extended = None
+                if char in ("\x00", "\xe0"):
+                    extended = msvcrt.getwch()
+                data = windows_key_to_uart(char, extended)
+                if data:
+                    write_paced(ser, data)
         else:
             for line in sys.stdin:
                 write_paced(ser, line.encode("ascii", errors="ignore"))
@@ -287,11 +452,47 @@ def parse_args(argv=None):
     parser.add_argument("--startup-delay", type=float, default=5.0)
     parser.add_argument("--target-delay", type=float, default=5.0)
     parser.add_argument("--preflight-timeout", type=float, default=20.0)
-    parser.add_argument("--preflight-attempts", type=int, default=2)
+    parser.add_argument("--preflight-attempts", type=int, default=5)
     parser.add_argument("--target-marker", default="")
     parser.add_argument("--target-timeout", type=float, default=20.0)
-    parser.add_argument("--target-attempts", type=int, default=2)
-    parser.add_argument("--preamble", type=int, default=8192)
+    parser.add_argument("--target-attempts", type=int, default=5)
+    parser.add_argument("--preamble", type=int, default=4096)
+    parser.add_argument(
+        "--protocol",
+        choices=("v1", "v2"),
+        default="v2",
+        help="bootloader protocol; v2 adds full-payload CRC32 verification",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=32,
+        help="payload bytes written per host-side serial chunk",
+    )
+    parser.add_argument(
+        "--chunk-delay",
+        type=float,
+        default=0.001,
+        help="pause between payload chunks in seconds",
+    )
+    parser.add_argument(
+        "--sync-settle",
+        type=float,
+        default=0.02,
+        help="pause after the takeover sync word in seconds",
+    )
+    parser.add_argument(
+        "--header-settle",
+        type=float,
+        default=0.005,
+        help="pause after the length/CRC header in seconds",
+    )
+    parser.add_argument(
+        "--boot-ack-timeout",
+        type=float,
+        default=2.0,
+        help="seconds to wait for v2 loader ACK/NAK before retrying the frame",
+    )
     parser.add_argument(
         "--skip-auto-reload",
         action="store_true",
@@ -308,6 +509,15 @@ def parse_args(argv=None):
         parser.error("--port is required unless --dry-run is used")
     if args.preamble < 0:
         parser.error("--preamble must be non-negative")
+    if args.chunk_size < 1 or args.chunk_size > 4096:
+        parser.error("--chunk-size must be between 1 and 4096")
+    if (
+        args.chunk_delay < 0
+        or args.sync_settle < 0
+        or args.header_settle < 0
+        or args.boot_ack_timeout <= 0
+    ):
+        parser.error("upload delays must be non-negative and ACK timeout must be positive")
     if args.preflight_attempts < 1:
         parser.error("--preflight-attempts must be at least 1")
     if args.target_attempts < 1:
@@ -326,7 +536,17 @@ def main(argv=None):
 
     print(f"Preflight: {os.path.abspath(args.preflight_mem)} ({len(preflight_payload)} bytes)")
     print(f"Target:    {os.path.abspath(args.target_mem)} ({len(target_payload)} bytes)")
+    if args.protocol == "v2":
+        print(
+            "Protocol:  v2 CRC32 "
+            f"(preflight=0x{payload_crc32(preflight_payload):08X}, "
+            f"target=0x{payload_crc32(target_payload):08X})"
+        )
+    else:
+        print("Protocol:  v1 legacy (no full-payload CRC)")
     if args.dry_run:
+        image_frame(preflight_payload, protocol=args.protocol)
+        image_frame(target_payload, protocol=args.protocol)
         print("Dry run passed: both images and upload frames are valid.")
         return 0
     if serial is None:
@@ -355,7 +575,7 @@ def main(argv=None):
 
             if not args.skip_auto_reload:
                 print(
-                    "Requesting bootloader rearm from any running RTOS Console...",
+                    "Requesting bootloader rearm from any running RTOS application...",
                     file=sys.stderr,
                 )
                 time.sleep(0.1)
@@ -379,15 +599,21 @@ def main(argv=None):
                     preflight_payload,
                     target_payload,
                     preamble=args.preamble,
+                    protocol=args.protocol,
+                    chunk_size=args.chunk_size,
+                    chunk_delay=args.chunk_delay,
+                    sync_settle=args.sync_settle,
+                    header_settle=args.header_settle,
                     preflight_timeout=args.preflight_timeout,
                     target_delay=args.target_delay,
                     preflight_attempts=args.preflight_attempts,
+                    boot_ack_timeout=args.boot_ack_timeout,
                     rx_sink=rx_sink,
                     status_sink=lambda message: print(message, file=sys.stderr),
                 )
             except MarkerTimeout as exc:
                 raise PreflightError(
-                    f"{exc}; automatic Console reload and upload retry did not recover "
+                    f"{exc}; automatic application reload and upload retry did not recover "
                     "the board. Press CPU RESET and try again"
                 ) from exc
             print("Preflight passed; target image sent for bootloader verification.", file=sys.stderr)
@@ -399,7 +625,13 @@ def main(argv=None):
                     target_marker=marker,
                     target_timeout=args.target_timeout,
                     preamble=args.preamble,
+                    protocol=args.protocol,
+                    chunk_size=args.chunk_size,
+                    chunk_delay=args.chunk_delay,
+                    sync_settle=args.sync_settle,
+                    header_settle=args.header_settle,
                     target_attempts=args.target_attempts,
+                    boot_ack_timeout=args.boot_ack_timeout,
                     retry_delay=args.target_delay,
                     rx_sink=rx_sink,
                     status_sink=lambda message: print(message, file=sys.stderr),

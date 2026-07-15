@@ -1,0 +1,57 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# C/C++ and RISC-V compiler outputs
+*.o
+*.d
+*.elf
+*.bin
+*.map
+*.dis
+
+# HDL simulator outputs
+*.out
+*.vcd
+*.fst
+*.wdb
+
+# Vivado generated state and reports
+.Xil/
+*.jou
+*.log
+*.str
+*.pb
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+
+# Generated project build directories
+/build_*/
+
+# Keep the validated FPGA image and its final timing/build record.
+!/build_fpga/
+/build_fpga/*
+!/build_fpga/board_top_rtos_rearm.bit
+!/build_fpga/vivado_bitstream_build.log
+
+# Temporary compiler/simulator products; temp/*.v files are source fixtures.
+/temp/*.out
+/temp/*.tmp
+
+# Editor and operating-system noise
+*~
+*.bak
+*.tmp
+.DS_Store
+Thumbs.db
+Desktop.ini

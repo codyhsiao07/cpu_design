@@ -43,6 +43,50 @@ $profiles = @{
     Main = "OS\rtos\src\main_console.c"
     Extra = @("OS\rtos\src\board_control.c")
   }
+  "platform" = @{
+    Main = "OS\rtos\src\main_platform.c"
+    Extra = @("OS\rtos\src\board_control.c")
+  }
+  "lua" = @{
+    Main = "OS\rtos\src\main_lua.c"
+    Extra = @(
+      "OS\rtos\src\board_control.c",
+      "OS\rtos\src\lua_rtos_port.c",
+      "OS\rtos\src\lua_rtos_libs.c",
+      "OS\rtos\src\lua_script_protocol.c",
+      "third_party\lua-5.4.8\src\lapi.c",
+      "third_party\lua-5.4.8\src\lauxlib.c",
+      "third_party\lua-5.4.8\src\lbaselib.c",
+      "third_party\lua-5.4.8\src\lcode.c",
+      "third_party\lua-5.4.8\src\lcorolib.c",
+      "third_party\lua-5.4.8\src\lctype.c",
+      "third_party\lua-5.4.8\src\ldebug.c",
+      "third_party\lua-5.4.8\src\ldo.c",
+      "third_party\lua-5.4.8\src\ldump.c",
+      "third_party\lua-5.4.8\src\lfunc.c",
+      "third_party\lua-5.4.8\src\lgc.c",
+      "third_party\lua-5.4.8\src\llex.c",
+      "third_party\lua-5.4.8\src\lmem.c",
+      "third_party\lua-5.4.8\src\lobject.c",
+      "third_party\lua-5.4.8\src\lopcodes.c",
+      "third_party\lua-5.4.8\src\lparser.c",
+      "third_party\lua-5.4.8\src\lstate.c",
+      "third_party\lua-5.4.8\src\lstring.c",
+      "third_party\lua-5.4.8\src\ltable.c",
+      "third_party\lua-5.4.8\src\ltablib.c",
+      "third_party\lua-5.4.8\src\ltm.c",
+      "third_party\lua-5.4.8\src\lundump.c",
+      "third_party\lua-5.4.8\src\lutf8lib.c",
+      "third_party\lua-5.4.8\src\lvm.c",
+      "third_party\lua-5.4.8\src\lzio.c"
+    )
+    CFlags = @(
+      "-DLUA_32BITS=1",
+      "-DNDEBUG",
+      "-I$(Join-Path $repoRoot 'third_party\lua-5.4.8\src')",
+      "-include$(Join-Path $repoRoot 'OS\rtos\src\lua_rtos_config.h')"
+    )
+  }
   "vga_demo" = @{
     Main = "OS\rtos\src\main_vga_demo.c"
     Extra = @("game\vga_fb.c")
@@ -60,9 +104,15 @@ if ([string]::IsNullOrWhiteSpace($MainSource)) {
   }
   $main = Resolve-RepoFile $profiles[$App].Main
   $profileExtra = @($profiles[$App].Extra | ForEach-Object { Resolve-RepoFile $_ })
+  if ($profiles[$App].ContainsKey("CFlags")) {
+    $profileCFlags = @($profiles[$App].CFlags)
+  } else {
+    $profileCFlags = @()
+  }
 } else {
   $main = Resolve-RepoFile $MainSource
   $profileExtra = @()
+  $profileCFlags = @()
 }
 
 $userExtra = @($ExtraSource | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { Resolve-RepoFile $_ })
@@ -83,12 +133,18 @@ $sources = @(
   (Join-Path $repoRoot "OS\rtos\src\startup.S"),
   $main,
   (Join-Path $repoRoot "OS\rtos\src\uart.c"),
+  (Join-Path $repoRoot "OS\rtos\src\perf_counters.c"),
   (Join-Path $repoRoot "OS\rtos\src\freertos_hooks.c"),
+  (Join-Path $repoRoot "OS\rtos\src\rtos_heap.c"),
   (Join-Path $repoRoot "OS\rtos\src\minilibc.c")
 ) + $profileExtra + $userExtra + @(
   (Join-Path $kernel "list.c"),
   (Join-Path $kernel "queue.c"),
+  (Join-Path $kernel "event_groups.c"),
+  (Join-Path $kernel "stream_buffer.c"),
   (Join-Path $kernel "tasks.c"),
+  (Join-Path $kernel "timers.c"),
+  (Join-Path $kernel "portable\MemMang\heap_4.c"),
   (Join-Path $portDir "port.c"),
   (Join-Path $portDir "portASM.S")
 )
@@ -130,6 +186,8 @@ $gccArgs = @(
   "-mabi=ilp32",
   "-mno-relax",
   "-ffreestanding",
+  "-ffunction-sections",
+  "-fdata-sections",
   "-nostdlib",
   "-O2",
   "-Wall",
@@ -144,8 +202,9 @@ $gccArgs = @(
   "-Wl,-T,$(Join-Path $repoRoot 'OS\rtos\link_ddr.ld')",
   "-Wl,-Map,$map",
   "-Wl,--no-relax",
+  "-Wl,--gc-sections",
   "-o", $elf
-) + $sources + @("-lgcc")
+) + $profileCFlags + $sources + @("-lgcc")
 
 & $gcc @gccArgs
 if ($LASTEXITCODE -ne 0) { throw "gcc failed" }

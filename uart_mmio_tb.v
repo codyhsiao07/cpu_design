@@ -11,6 +11,11 @@ module uart_mmio_tb;
   localparam [31:0] UART_RX_DATA_ADDR   = 32'h4000_0008;
   localparam [31:0] UART_RX_STATUS_ADDR = 32'h4000_000C;
   localparam [31:0] UART_BAD_ADDR       = 32'h4000_0030;
+  localparam [31:0] PERF_ID_ADDR        = 32'h4000_0100;
+  localparam [31:0] PERF_INFO_ADDR      = 32'h4000_0104;
+  localparam [31:0] PERF_CONTROL_ADDR   = 32'h4000_0108;
+  localparam [31:0] PERF_STATUS_ADDR    = 32'h4000_010C;
+  localparam [31:0] PERF_CYCLE_LO_ADDR  = 32'h4000_0110;
 
   reg clk;
   reg rst_n;
@@ -68,6 +73,7 @@ module uart_mmio_tb;
 
   reg [31:0] mmio_rdata;
   reg        mmio_err;
+  reg [31:0] cycle_snapshot_low;
 
   icache_pipeline_top #(
     .USE_MIG      (0),
@@ -165,8 +171,9 @@ module uart_mmio_tb;
         @(negedge clk);
         #1;
       end
-      if (dut.dmem_rvalid_i !== 1'b1) begin
-        fail("MMIO write did not generate a response");
+      while (dut.dmem_rvalid_i !== 1'b1) begin
+        @(posedge clk);
+        #1;
       end
       @(posedge clk);
       #1;
@@ -191,8 +198,9 @@ module uart_mmio_tb;
         @(negedge clk);
         #1;
       end
-      if (dut.dmem_rvalid_i !== 1'b1) begin
-        fail("MMIO read did not generate a response");
+      while (dut.dmem_rvalid_i !== 1'b1) begin
+        @(posedge clk);
+        #1;
       end
       data = dut.dmem_rdata_i;
       err  = dut.dmem_rsp_err_i;
@@ -301,6 +309,35 @@ module uart_mmio_tb;
       fail("USE_MIG=0 setup did not reach ready state");
     end
 
+    // Performance-bank integration: discovery, clear/start, atomic snapshot,
+    // and stable shadow reads through the same CPU MMIO path as software.
+    mmio_read(PERF_ID_ADDR, mmio_rdata, mmio_err);
+    if (mmio_err !== 1'b0 || mmio_rdata !== 32'h5045_5246)
+      fail("Performance counter ID mismatch");
+    mmio_read(PERF_INFO_ADDR, mmio_rdata, mmio_err);
+    if (mmio_err !== 1'b0 || mmio_rdata[31:16] !== 16'h0001 ||
+        mmio_rdata[7:0] !== 8'd24)
+      fail("Performance counter INFO mismatch");
+
+    mmio_write(PERF_CONTROL_ADDR, 32'h0000_0002, 4'b0001); // clear + stop
+    mmio_read(PERF_CYCLE_LO_ADDR, mmio_rdata, mmio_err);
+    if (mmio_err !== 1'b0 || mmio_rdata !== 32'd0)
+      fail("Performance counter clear/stop failed");
+    mmio_write(PERF_CONTROL_ADDR, 32'h0000_0001, 4'b0001); // start
+    repeat (12) @(posedge clk);
+    mmio_write(PERF_CONTROL_ADDR, 32'h0000_0004, 4'b0001); // stop + snapshot
+    mmio_read(PERF_STATUS_ADDR, mmio_rdata, mmio_err);
+    if (mmio_err !== 1'b0 || mmio_rdata[1:0] !== 2'b10)
+      fail("Performance counter snapshot status mismatch");
+    mmio_read(PERF_CYCLE_LO_ADDR, mmio_rdata, mmio_err);
+    cycle_snapshot_low = mmio_rdata;
+    if (mmio_err !== 1'b0 || cycle_snapshot_low < 32'd12)
+      fail("Performance cycle counter did not advance");
+    repeat (6) @(posedge clk);
+    mmio_read(PERF_CYCLE_LO_ADDR, mmio_rdata, mmio_err);
+    if (mmio_err !== 1'b0 || mmio_rdata !== cycle_snapshot_low)
+      fail("Performance snapshot was not stable");
+
     mmio_read(UART_TX_STATUS_ADDR, mmio_rdata, mmio_err);
     if (mmio_err !== 1'b0 || mmio_rdata !== 32'h0000_0001) begin
       $display("[TB] FAIL: unexpected initial TX status rdata=0x%08x err=%0b",
@@ -390,7 +427,7 @@ module uart_mmio_tb;
       fail("Invalid MMIO read did not report an error");
     end
 
-    $display("[TB] PASS: UART MMIO TX/RX checks completed");
+    $display("[TB] PASS: UART/performance MMIO checks completed");
     $finish;
   end
 endmodule

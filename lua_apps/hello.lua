@@ -1,0 +1,5 @@
+print("SCRIPT_HELLO")
+print("Lua version", _VERSION)
+print("tick", rtos.tick())
+print("tasks", rtos.tasks())
+print("SCRIPT_HELLO_DONE")

@@ -6,9 +6,17 @@
 void rtos_uart_putc( char c );
 void rtos_uart_write( const char * text );
 void rtos_uart_write_u32( uint32_t value );
+void rtos_uart_write_u64( uint64_t value );
 void rtos_uart_write_hex32( uint32_t value );
 void rtos_uart_write_line( const char * text );
 void rtos_uart_wait_tx_idle( void );
+int rtos_uart_rx_interrupt_init( void );
+int rtos_uart_handle_external_interrupt( void );
 int rtos_uart_try_getc( char * value, uint32_t * overrun );
+int rtos_uart_getc( char * value, uint32_t timeout_ticks, uint32_t * overrun );
+uint32_t rtos_uart_rx_interrupt_count( void );
+uint32_t rtos_uart_rx_hardware_overrun_count( void );
+uint32_t rtos_uart_rx_stream_drop_count( void );
+void rtos_uart_trigger_test_interrupt( void );
 
 #endif

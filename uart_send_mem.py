@@ -4,6 +4,7 @@ import struct
 import sys
 import threading
 import time
+import zlib
 
 try:
     import serial  # pyserial
@@ -15,7 +16,10 @@ try:
 except ImportError:
     msvcrt = None
 
-SYNC_WORD = 0xC0DE5A5A
+from tools.uart_keys import windows_key_to_uart
+
+SYNC_WORD_V1 = 0xC0DE5A5A
+SYNC_WORD_V2 = 0xC0DE5A5B
 
 
 def load_mem(path):
@@ -28,6 +32,82 @@ def load_mem(path):
             word = int(line, 16) & 0xFFFFFFFF
             data += word.to_bytes(4, "little")
     return data
+
+
+def payload_crc32(payload):
+    return zlib.crc32(payload) & 0xFFFFFFFF
+
+
+def image_header(payload, protocol):
+    if protocol == "v1":
+        return struct.pack("<II", SYNC_WORD_V1, len(payload))
+    return struct.pack("<III", SYNC_WORD_V2, len(payload), payload_crc32(payload))
+
+
+def write_all(ser, data):
+    offset = 0
+    while offset < len(data):
+        written = ser.write(data[offset:])
+        if written is None:
+            written = len(data) - offset
+        if written <= 0:
+            raise OSError("serial write made no progress")
+        offset += written
+
+
+def send_image(
+    ser,
+    payload,
+    protocol="v2",
+    preamble=4096,
+    chunk_size=32,
+    chunk_delay=0.001,
+    sync_settle=0.02,
+    header_settle=0.005,
+):
+    leader = b"\x55" * 4096
+    remaining = preamble
+    while remaining > 0:
+        count = min(remaining, len(leader))
+        write_all(ser, leader[:count])
+        remaining -= count
+    ser.flush()
+
+    header = image_header(payload, protocol)
+    write_all(ser, header[:4])
+    ser.flush()
+    if sync_settle > 0:
+        time.sleep(sync_settle)
+    write_all(ser, header[4:])
+    ser.flush()
+    if header_settle > 0:
+        time.sleep(header_settle)
+
+    for offset in range(0, len(payload), chunk_size):
+        write_all(ser, payload[offset : offset + chunk_size])
+        ser.flush()
+        if chunk_delay > 0 and offset + chunk_size < len(payload):
+            time.sleep(chunk_delay)
+
+
+def wait_for_boot_reply(ser, timeout_seconds):
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    pending_output = bytearray()
+    ser.timeout = min(0.1, max(0.01, timeout_seconds))
+    while time.monotonic() < deadline:
+        chunk = ser.read(4096)
+        if not chunk:
+            continue
+        pending_output += chunk.replace(b"\x06", b"").replace(
+            b"\x15", b""
+        ).replace(b"\x16", b"")
+        if b"\x15" in chunk:
+            return False, "payload CRC mismatch", bytes(pending_output)
+        if b"\x16" in chunk:
+            return False, "DDR readback mismatch", bytes(pending_output)
+        if b"\x06" in chunk:
+            return True, "accepted", bytes(pending_output)
+    return False, "no ACK/NAK", bytes(pending_output)
 
 
 def listen_for_rx(ser, idle_seconds):
@@ -99,15 +179,12 @@ def interactive_terminal(ser, hint_text=None):
                 ch = msvcrt.getwch()
                 if ch == "\x03":
                     raise KeyboardInterrupt
-                if ch == "\r":
-                    ser.write(b"\r\n")
-                    ser.flush()
-                elif ch == "\x08":
-                    # Ignore local backspace handling; the board-side input parser
-                    # only accepts digits/spaces/newlines.
-                    continue
-                else:
-                    ser.write(ch.encode("ascii", errors="ignore"))
+                extended = None
+                if ch in ("\x00", "\xe0"):
+                    extended = msvcrt.getwch()
+                data = windows_key_to_uart(ch, extended)
+                if data:
+                    ser.write(data)
                     ser.flush()
         else:
             while True:
@@ -132,10 +209,28 @@ def main():
     p.add_argument("--baud", type=int, default=115200)
     p.add_argument("--mem", required=True, help="mem file with 32-bit hex words")
     p.add_argument("--delay", type=float, default=0.0, help="delay before send (sec)")
-    p.add_argument("--preamble", type=int, default=64, help="number of 0x55 bytes before sync")
+    p.add_argument("--preamble", type=int, default=4096, help="number of 0x55 bytes before sync")
     p.add_argument("--preamble-seconds", type=float, default=0.0,
                    help="send 0x55 preamble for this many UART line seconds before sync")
-    p.add_argument("--zero", action="store_true", help="send sync + zero length only")
+    p.add_argument(
+        "--protocol",
+        choices=("v1", "v2"),
+        default="v2",
+        help="v2 adds full-payload CRC32; use v1 only with an old bitstream",
+    )
+    p.add_argument("--chunk-size", type=int, default=32)
+    p.add_argument("--chunk-delay", type=float, default=0.001)
+    p.add_argument("--sync-settle", type=float, default=0.02)
+    p.add_argument("--header-settle", type=float, default=0.005)
+    p.add_argument("--attempts", type=int, default=5,
+                   help="maximum v2 frame attempts after ACK/NAK failure")
+    p.add_argument("--ack-timeout", type=float, default=2.0,
+                   help="seconds to wait for the v2 loader reply")
+    p.add_argument(
+        "--zero",
+        action="store_true",
+        help="send a legacy v1 sync + zero length only",
+    )
     p.add_argument("--listen", action="store_true",
                    help="keep the port open after upload and print RX bytes")
     p.add_argument("--listen-seconds", type=float, default=5.0,
@@ -146,10 +241,20 @@ def main():
                    help="override the interactive input hint text")
     args = p.parse_args()
 
+    if args.preamble < 0:
+        p.error("--preamble must be non-negative")
+    if args.chunk_size < 1 or args.chunk_size > 4096:
+        p.error("--chunk-size must be between 1 and 4096")
+    if min(args.chunk_delay, args.sync_settle, args.header_settle) < 0:
+        p.error("upload delays must be non-negative")
+    if args.attempts < 1:
+        p.error("--attempts must be at least 1")
+    if args.ack_timeout <= 0:
+        p.error("--ack-timeout must be positive")
+
     payload = b"" if args.zero else load_mem(args.mem)
     length = len(payload)
-    sync = struct.pack("<I", SYNC_WORD)
-    hdr = struct.pack("<I", length)
+    protocol = "v1" if args.zero else args.protocol
 
     with serial.Serial(args.port, args.baud, timeout=1) as ser:
         # Keep sideband control lines inactive during upload.
@@ -172,16 +277,47 @@ def main():
             chunk = b"\x55" * 4096
             while timed_preamble > 0:
                 n = min(timed_preamble, len(chunk))
-                ser.write(chunk[:n])
+                write_all(ser, chunk[:n])
                 timed_preamble -= n
-        if args.preamble > 0:
-            ser.write(b"\x55" * args.preamble)
-        ser.write(sync)
-        ser.write(hdr)
-        ser.write(payload)
-        ser.flush()
+        pending_output = bytearray()
+        attempts = 1 if protocol == "v1" else args.attempts
+        for attempt in range(1, attempts + 1):
+            send_image(
+                ser,
+                payload,
+                protocol=protocol,
+                preamble=args.preamble,
+                chunk_size=args.chunk_size,
+                chunk_delay=args.chunk_delay,
+                sync_settle=args.sync_settle,
+                header_settle=args.header_settle,
+            )
+            if protocol == "v1":
+                accepted = True
+                reason = "legacy v1 sent"
+            else:
+                accepted, reason, early_output = wait_for_boot_reply(
+                    ser, args.ack_timeout
+                )
+                pending_output += early_output
+            if accepted:
+                break
+            print(
+                f"Upload attempt {attempt}/{attempts} failed ({reason}); retrying...",
+                file=sys.stderr,
+            )
+        else:
+            raise SystemExit(
+                f"Upload failed after {attempts} attempts; last result: {reason}"
+            )
         mode = "zero-length" if args.zero else f"{length} bytes from {args.mem}"
-        print(f"Sent sync+{mode} to {args.port} @ {args.baud}")
+        crc_text = (
+            f", CRC32=0x{payload_crc32(payload):08X}" if protocol == "v2" else ""
+        )
+        print(f"Sent {protocol} sync+{mode}{crc_text} to {args.port} @ {args.baud}")
+        if pending_output and (args.listen or args.interactive):
+            sys.stdout.buffer.write(pending_output)
+            sys.stdout.buffer.flush()
         if args.listen:
             listen_for_rx(ser, args.listen_seconds)
         if args.interactive:

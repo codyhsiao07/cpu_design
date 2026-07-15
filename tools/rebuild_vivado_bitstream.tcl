@@ -48,6 +48,21 @@ launch_runs impl_1 -to_step write_bitstream -jobs $jobs
 wait_on_run impl_1
 require_run_complete impl_1
 
+# Vivado can report "write_bitstream Complete" even when setup timing is
+# violated.  Never publish that image as the board default.
+open_run impl_1
+set setup_paths [get_timing_paths -setup -max_paths 1]
+set hold_paths  [get_timing_paths -hold -max_paths 1]
+if {[llength $setup_paths] == 0 || [llength $hold_paths] == 0} {
+  error "Implementation completed without setup/hold timing paths"
+}
+set setup_wns [get_property SLACK [lindex $setup_paths 0]]
+set hold_whs  [get_property SLACK [lindex $hold_paths 0]]
+puts "FINAL_TIMING setup_wns={$setup_wns} hold_whs={$hold_whs}"
+if {$setup_wns < 0.0 || $hold_whs < 0.0} {
+  error "Refusing to publish timing-violating bitstream: WNS=$setup_wns WHS=$hold_whs"
+}
+
 set project_dir [file dirname $project_path]
 set bit_candidates [glob -nocomplain [file join $project_dir *.runs impl_1 *.bit]]
 if {[llength $bit_candidates] != 1} {

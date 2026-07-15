@@ -50,7 +50,19 @@ def main():
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--char-delay", type=float, default=0.002)
     parser.add_argument("--timeout", type=float, default=3.0)
+    parser.add_argument("--perf-iterations", type=int, default=256)
+    parser.add_argument(
+        "--perf-only",
+        action="store_true",
+        help="skip general Console checks and run only the performance workload",
+    )
     args = parser.parse_args()
+    if not 1 <= args.perf_iterations <= 100000:
+        parser.error("--perf-iterations must be 1..100000")
+
+    checks = (() if args.perf_only else CHECKS) + (
+        (f"perf test {args.perf_iterations}", b"PERF_TEST_PASS"),
+    )
 
     with serial.Serial(args.port, args.baud, timeout=0.05) as ser:
         try:
@@ -60,7 +72,7 @@ def main():
         except Exception:
             pass
 
-        for command, marker in CHECKS:
+        for command, marker in checks:
             print(f"\n[PROBE] command={command}", file=sys.stderr)
             send_paced(ser, command, args.char_delay)
             if not wait_for(ser, marker, args.timeout):
