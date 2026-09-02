@@ -2,6 +2,8 @@
 
 Version 0.9  |  Date: 2026-02-02
 
+> 閱讀提醒：本檔是原始完整規格／目標組態，不保證每個參數都等於目前實作。現行 RTL 行為、實測組態與限制以 [`docs/02-memory-io/DCACHE.md`](../docs/02-memory-io/DCACHE.md) 為準。
+
 # **1. 目的與範圍**
 本文件定義處理器資料快取（DCache, D$）之功能、介面、時序與設計限制。D$ 為 blocking cache：任何 cache miss 期間不接受新的 cacheable 存取請求；對於 uncached/MMIO 請求亦採單筆交易、一次僅允許 1 outstanding。
 # **2. 設計目標與基本參數**
@@ -27,6 +29,26 @@ Version 0.9  |  Date: 2026-02-02
 | 端口             | 單埠                 | 每 way 的 data/tag SRAM 單埠；不支援同周期 read+write |
 | Byte-mask        | 支援                 | store/partial write 使用 byte-enable                  |
 | ECC              | 無                   | no ECC / no parity                                    |
+
+```mermaid
+flowchart TD
+    CPU["CPU load / store request"] --> CACHEABLE{"cacheable DDR？"}
+    CACHEABLE -->|"否：MMIO / uncached"| UC["單筆 UC_READ / UC_WRITE<br/>bypass arrays"]
+    CACHEABLE -->|"是"| LOOKUP["tag/data lookup"]
+    LOOKUP --> HIT{"hit？"}
+    HIT -->|"是：load"| LOAD["選 byte/half/word<br/>回傳 data"]
+    HIT -->|"是：store"| STORE["byte mask 更新 line<br/>dirty = 1"]
+    HIT -->|"否：store"| NOWA["no-write-allocate<br/>直接 UC_WRITE"]
+    HIT -->|"否：load"| VICTIM{"victim dirty？"}
+    VICTIM -->|"是"| WB["write back victim line"]
+    VICTIM -->|"否"| REFILL["LINE_FILL"]
+    WB --> REFILL
+    REFILL --> INSTALL["安裝 tag/data/valid<br/>再回覆原 load"]
+    LOAD --> RESP["response / error"]
+    STORE --> RESP
+    NOWA --> UC
+    UC --> RESP["response / error"]
+```
 
 # **3. Cache 幾何（Derived Geometry）**
 由容量/line/相連度推導：

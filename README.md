@@ -10,6 +10,26 @@
 
 目前也已加入 FreeRTOS bring-up 與 VGA demo，可在板上展示 task scheduling、timer tick、context switch、queue IPC 與 VGA MMIO 更新。
 
+第一次閱讀或交接請先開啟 [`docs/README.md`](docs/README.md)。它用分層圖、資料夾地圖與角色路線說明哪些文件需要讀、哪些可以跳過。
+
+要直接上板則閱讀 [`docs/00-overview/BOARD_OPERATION_GUIDE.md`](docs/00-overview/BOARD_OPERATION_GUIDE.md)。該文件集中說明 bitstream、`.mem`、Monitor／`Ctrl+C`、application切換、Probe、Lua與VGA的執行時機。
+
+```mermaid
+flowchart LR
+    HOST["PC<br/>Vivado / compiler / Runner / terminal"] -->|"JTAG .bit"| FPGA["FPGA hardware"]
+    HOST -->|"UART .mem"| BOOT["UART bootloader"]
+    BOOT --> DDR["DDR2 firmware image"]
+    FPGA --> CPU["RV32IM CPU<br/>5-stage in-order"]
+    CPU --> IC["L1 I-Cache"]
+    CPU <--> DC["L1 D-Cache"]
+    IC <--> L2["Unified L2"]
+    DC <--> L2
+    L2 <--> DDR
+    CPU <--> MMIO["MMIO<br/>UART / Timer / Perf / VGA"]
+```
+
+圖中 JTAG 傳的是硬體配置，UART 傳的是 CPU 要執行的 firmware；兩條路徑最後在 FPGA 上會合，但用途不同。
+
 ## 1. 目前主線架構
 
 主要維護與驗證路徑：
@@ -133,17 +153,14 @@ P -> Q -> R        H
 - `R`：Renderer task 收到 queue event 後更新 VGA。
 - `H`：獨立 Heartbeat task，證明 scheduler 同時排程其他工作。
 
-更多說明：
+正式技術說明：
 
-- `RTOS_API_USAGE_GUIDE_zh-TW.md`
-- `RTOS_STAGE_RESULT.md`
-- `RTOS_VGA_DEMO_NOTES.md`
-- `explain_files_md/RTOS_APP_RUNNER_GUIDE.md`（preflight 後自動切換任意 RTOS `.mem`）
-- `explain_files_md/RTOS_CONSOLE_GUIDE.md`（互動命令、Task/Queue 架構與實板測試）
-- `explain_files_md/RTOS_PLATFORM_V1_GUIDE.md`（大型軟體移植前置層、自測與後續介面）
-- `explain_files_md/RTOS_LUA_GUIDE.md`（Lua REPL、RTOS API、建置與實板測試）
-- `explain_files_md/MMIO_PERFORMANCE_COUNTERS_GUIDE.md`（24 組 64-bit counter ABI 與用法）
-- `explain_files_md/PERFORMANCE_ANALYSIS_RESULT.md`（50 MHz 實板量測與瓶頸分析）
+- [`docs/04-freertos/RTOS_CONCEPTS.md`](docs/04-freertos/RTOS_CONCEPTS.md)：RTOS、Task、Scheduler、Blocking與Context Switch入門。
+- [`docs/05-applications/VGA_RTOS_DEMOS.md`](docs/05-applications/VGA_RTOS_DEMOS.md)：三Task與Queue VGA demo架構。
+- [`docs/05-applications/LUA_ARCHITECTURE.md`](docs/05-applications/LUA_ARCHITECTURE.md)：Lua parser、bytecode、VM與FreeRTOS關係。
+- [`docs/02-memory-io/PERFORMANCE_MONITORING_ARCHITECTURE.md`](docs/02-memory-io/PERFORMANCE_MONITORING_ARCHITECTURE.md)：RTL事件到軟體分析的完整效能監測路徑。
+- [`docs/06-verification/PERFORMANCE_BASELINE_ANALYSIS.md`](docs/06-verification/PERFORMANCE_BASELINE_ANALYSIS.md)：50 MHz實板基準與瓶頸推論。
+- [`docs/LEGACY_DOCUMENT_MIGRATION.md`](docs/LEGACY_DOCUMENT_MIGRATION.md)：舊報告檔名、已遷移重點與正式文件的對照紀錄。
 
 ## 6. 本地回歸現況
 

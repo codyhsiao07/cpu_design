@@ -5,6 +5,8 @@
 *日期：2026-02-04*
 
 
+> 閱讀提醒：本檔是原始完整規格／目標組態，不保證每個參數都等於目前實作。現行 RTL 行為、實測組態與限制以 [`docs/02-memory-io/L2_CACHE_DDR2.md`](../docs/02-memory-io/L2_CACHE_DDR2.md) 為準。
+
 # **1. 概述**
 本文件定義一個 unified Level-2（L2）快取之功能與介面規格。L2 位於已驗證的 I-cache（I$）與 D-cache（D$）之下，服務單核心、in-order 5-stage pipeline 系統。
 ## **1.1 範圍**
@@ -27,6 +29,29 @@ L2 提供：(1) I$/D$ 共用的 unified cache；(2) I$ / D$ miss 與 uncached（
 - DDR2 映射為一段連續的物理位址區間（見第 3 章）。
 # **2. 架構摘要**
 L2 為 unified 2-way set-associative cache，cache line 為 64B，策略為 write-back + write-allocate。L2 對 I$ 與 D$ 請求進行仲裁。Cached access 先查 L2（hit/miss）；miss 由 DDR2 refill。Uncached（MMIO 或顯式 uncached）會 bypass L2 arrays，直接走 MIG 存取 DDR2。
+
+```mermaid
+flowchart LR
+    IC["L1 I$ request"] --> ARB["I/D arbiter<br/>single outstanding"]
+    DC["L1 D$ request"] --> ARB
+    ARB --> TYPE{"cached DDR？"}
+    TYPE -->|"否"| BYPASS["uncached bypass"]
+    TYPE -->|"是"| ARR["L2 tag/data lookup"]
+    ARR --> HIT{"hit？"}
+    HIT -->|"是"| RSP["response to original L1"]
+    HIT -->|"否"| DIRTY{"victim dirty？"}
+    DIRTY -->|"是"| WB["eviction writeback"]
+    DIRTY -->|"否"| FILL["MIG line refill"]
+    FILL --> MIG
+    BYPASS --> MIG["MIG native app interface"]
+    WB --> MIG
+    MIG -->|"writeback complete"| FILL
+    MIG -->|"refill data"| INSTALL["install new line"]
+    INSTALL --> RSP
+    MIG -->|"uncached completion"| RSP
+    MIG <--> DDR["DDR2"]
+```
+
 ## **2.1 頂層策略（v0.1 固定）**
 
 | 項目                    | 值                                        |

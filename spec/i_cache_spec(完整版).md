@@ -1,6 +1,8 @@
 ﻿**I-Cache 規格書 (Draft v1)**
 
 日期：2026-01-29  |  目標：in-order 5-stage 單核 L1 I$ (L2 共用)
+> 閱讀提醒：本檔是原始完整規格／目標組態，不保證每個參數都等於目前實作。現行 RTL 行為、實測組態與限制以 [`docs/02-memory-io/ICACHE.md`](../docs/02-memory-io/ICACHE.md) 為準。
+
 # **1. 範圍與假設**
 本文件定義 L1 I-Cache (I$) 的架構、時序、miss 行為、flush/uncacheable 規則與效能計數器。
 
@@ -9,6 +11,21 @@
 - 無 MMU/TLB (後續可擴充)。
 - 指令寬度：32-bit，PC 需 4-byte 對齊；不支援 RVC (16-bit compressed) 於 v1。
 - I$ 為 read-only cache：無 dirty bit、無 write-back / write-allocate 概念。
+
+```mermaid
+flowchart LR
+    IF["CPU IF<br/>PC request"] --> IF1["IF1<br/>index tag/data arrays"]
+    IF1 --> IF2["IF2<br/>tag compare + word select"]
+    IF2 --> HIT{"hit？"}
+    HIT -->|"是"| RESP["instruction response"]
+    HIT -->|"否"| MISS["blocking miss FSM<br/>hold new fetch"]
+    MISS --> L2["L2 LINE_FILL request"]
+    L2 --> REFILL["收完整 cache line<br/>更新 data / tag / valid"]
+    REFILL --> RETRY["重試原 PC"]
+    RETRY --> IF1
+    REDIR["branch / trap redirect"] -->|"kill stale response"| IF2
+```
+
 # **2. 介面與訊號定義**
 本節定義 I$ 與 CPU 前端 (IF) 及 L2/Memory 之介面訊號、握手規則與時序假設。v1 以單一 outstanding miss/uncached request (blocking) 為前提；未來如導入 non-blocking/MSHR 需擴充介面。
 ## **2.1 Clock/Reset**
