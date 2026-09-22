@@ -68,6 +68,13 @@ Compiler flags 包含：
 
 在 RV32 target 上，Lua 使用 32-bit integer 與 single-precision floating-point number 組態。這能降低 code/RAM 需求，但數值範圍與精度不同於一般 64-bit PC Lua；需要精確 64-bit 整數或 double 精度的演算法不能直接假設結果相同。
 
+數學底層使用工具鏈提供的 RV32 soft-float `libm`（build 連結 `-lm -lgcc`），涵蓋
+`sqrtf`、`powf`、`fmodf`、`frexpf` 等。此路徑不需要硬體 F extension。
+自製字串輸出會明確處理 `inf`／`-inf`／`nan`；十六進位指數解析會飽和計數並透過
+`ldexpf` 縮放，避免整數溢位或極長的 native C 迴圈。boot self-test 包含這些邊界案例。
+十進位 parser 使用最多 18 位有效數字的 double 中間值，最後轉成 float，避免逐位 single-precision
+累加造成 `4294967296.0` 等數字失真；長尾字串與所有 halfway rounding 尚未做窮舉相容性證明。
+
 ## 4. 刻意保留與移除的 Lua libraries
 
 | Library | 狀態 | 說明 |

@@ -204,7 +204,14 @@ $gccArgs = @(
   "-Wl,--no-relax",
   "-Wl,--gc-sections",
   "-o", $elf
-) + $profileCFlags + $sources + @("-lgcc")
+) + $profileCFlags + $sources
+# Lua's arithmetic operators and math library need full-range IEEE-754
+# functions. Use the matching RV32 soft-float multilib instead of local
+# approximations (which mishandled tiny/large values, powers and infinity).
+if ($App -eq "lua" -and [string]::IsNullOrWhiteSpace($MainSource)) {
+  $gccArgs += "-lm"
+}
+$gccArgs += "-lgcc"
 
 & $gcc @gccArgs
 if ($LASTEXITCODE -ne 0) { throw "gcc failed" }

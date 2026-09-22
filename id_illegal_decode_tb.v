@@ -177,10 +177,19 @@ module id_illegal_decode_tb;
     check_illegal(32'h3020_0073, 1'b1, 13); // mret illegal outside M-mode
     check_illegal(i_type_instr(12'h300, 5'd2, 3'b001, 5'd1, 7'b1110011), 1'b1, 14); // machine CSR illegal in U-mode
     check_illegal(32'h0000_100F, 1'b1, 15); // FENCE.I unsupported without Zifencei
+    // SYSTEM funct3=100 is reserved, even when the remaining fields match
+    // ECALL/EBREAK/MRET. It must not initiate a trap of the wrong cause or mret.
+    check_illegal(32'h0000_4073, 1'b1, 16);
+    check_illegal(32'h0010_4073, 1'b1, 17);
+    current_priv_i = 2'b11;
+    check_illegal(32'h3020_4073, 1'b1, 18);
+    check_illegal(32'h0000_0073, 1'b0, 19);
+    check_illegal(32'h0010_0073, 1'b0, 20);
+    check_illegal(32'h3020_0073, 1'b0, 21);
 
     if (failures != 0) begin
       $display("FAIL: id_illegal_decode_tb failures=%0d", failures);
-      $finish(1);
+      $fatal(1, "illegal decode regression failed");
     end
 
     $display("PASS: id_illegal_decode_tb");

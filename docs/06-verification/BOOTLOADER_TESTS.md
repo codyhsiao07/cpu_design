@@ -139,35 +139,27 @@ MIG native interface的 command ready與write-data ready不保證同一 cycle出
 
 ## 7. 大型 image CRC test
 
-[`uart_bootloader_large_crc_tb.v`](../../uart_bootloader_large_crc_tb.v) 會使用實際 Lua image：
+[`uart_bootloader_large_crc_tb.v`](../../uart_bootloader_large_crc_tb.v) 可使用指定的實際 firmware image。
+建議透過 regression runner 執行；runner 會從 `.mem` 計算 payload 長度與 host `zlib.crc32`，
+再透過 `IMAGE_BYTES`／`IMAGE_CRC32` parameters 與 `+MEMFILE` 傳給 TB：
 
-```text
-build_rtos_apps/lua/rtos_lua.mem
+```powershell
+python tools/run_regression.py --suite unit `
+  --boot-image build_rtos_apps/lua/rtos_lua.mem
 ```
 
-目前 test fixture固定：
+此命令也執行其餘 unit／subsystem TB。指定的 image 必須已建置，且大小不超過 512 KiB；
+缺失、含無效 word 或超出容量都會失敗。重新編譯 firmware 後可直接重跑，不必修改 TB 常數。
+
+為相容舊的手動呼叫，TB 未覆寫參數時仍保留歷史 fixture：
 
 ```text
+MEMFILE = build_rtos_apps/lua/rtos_lua.mem
 IMAGE_BYTES = 213580
 IMAGE_CRC32 = 0xD360D14F
 ```
 
-先確認 fixture吻合：
-
-```powershell
-$mem = "./build_rtos_apps/lua/rtos_lua.mem"
-$words = (Get-Content $mem | Where-Object { $_.Trim() -ne "" }).Count
-$bytes = $words * 4
-Write-Host "words=$words bytes=$bytes"
-```
-
-執行：
-
-```powershell
-Invoke-BootTb "uart_bootloader_large_crc_tb"
-```
-
-成功：
+歷史 fixture 的成功輸出如下；新 image 的長度／CRC 會不同：
 
 ```text
 [LARGE_CRC_TB] REFERENCE crc=d360d14f
@@ -191,16 +183,12 @@ Invoke-BootTb "uart_bootloader_large_crc_tb"
 
 ### Fixture 更新規則
 
-Lua firmware只要重新編譯，image大小或CRC可能改變。若 fixture不符，不應直接將 large test失敗歸咎於 RTL。更新步驟：
+Lua firmware 只要重新編譯，image 大小或 CRC 可能改變。更新步驟：
 
 1. 建置正式 Lua image；
-2. 確認 `.mem` canonical格式；
-3. 以 host `zlib.crc32(payload)`計算 CRC；
-4. 更新 TB 的 `IMAGE_BYTES`與`IMAGE_CRC32`；
-5. 先確認 `REFERENCE`等於新常數；
-6. 再執行完整 readback測試。
-
-長期建議把 bytes/CRC改為 plusarg或由產生腳本建立 include file，避免 testbench hard-code與 firmware drift。
+2. 用上方 runner 的 `--boot-image` 指向新的 `.mem`；
+3. 確認 `REFERENCE`、`FINAL expected/computed` 與 `PASS` 一致；
+4. 保存 `summary.json`、simulation log 與對應 firmware。
 
 ## 8. 一次執行四個 bootloader TB
 
@@ -208,15 +196,16 @@ Lua firmware只要重新編譯，image大小或CRC可能改變。若 fixture不�
 $tops = @(
   "uart_bootloader_tb",
   "uart_bootloader_stall_tb",
-  "uart_bootloader_split_ready_tb",
-  "uart_bootloader_large_crc_tb"
+  "uart_bootloader_split_ready_tb"
 )
 foreach ($top in $tops) {
   Invoke-BootTb $top
 }
 ```
 
-若沒有符合 large fixture的 Lua image，可將前三個記為 PASS，large CRC明確記為 `NOT RUN: fixture unavailable`，不可把它偷偷省略後仍聲稱四項全數通過。
+上方手動命令執行前三個 TB；第四個 large CRC 使用第 7 節的 runner 命令傳入當次 image。
+若沒有已建置的 Lua image，可將前三個記為 PASS，large CRC 明確記為 `NOT RUN: fixture unavailable`，
+不可省略後仍聲稱四項全數通過。
 
 ## 9. Host uploader 單元測試
 
@@ -342,4 +331,3 @@ Bootloader的安全性主要由「錯誤時不啟動」決定，而不是只由�
 ## 15. 驗證結論邊界
 
 四個RTL TB與host unit tests通過，可以證明目前model與test vectors下的protocol、CRC、rearm、recovery與back-pressure行為符合預期。最終仍必須做實板兩階段 upload，因為RTL TB不包含真實USB bridge、DDR2 training、FPGA timing與板級reset。
-

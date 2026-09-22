@@ -96,7 +96,7 @@ module vga_subsystem #(
 
             if (cpu_req_ready && cpu_addr_hit && cpu_req_we) begin
                 if (cpu_ctrl_sel) begin
-                    if (cpu_req_wstrb != 4'd0)
+                    if (cpu_req_wstrb[0])
                         front_buf_sel_cpu_q <= cpu_req_wdata[0];
                 end else begin
                     if (cpu_req_wstrb[0]) fb_lo_mem[cpu_word_addr][7:0]  <= cpu_req_wdata[7:0];

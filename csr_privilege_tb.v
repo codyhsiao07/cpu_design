@@ -33,6 +33,7 @@ module csr_privilege_tb;
   wire meie_en_o;
 
   integer failures;
+  integer mpp;
 
   csr_file dut (
     .clk(clk),
@@ -135,9 +136,37 @@ module csr_privilege_tb;
     check_cond(current_priv_o == 2'b11, "trap enters machine mode");
     check_cond(mstatus_o[12:11] == 2'b00, "trap saves previous U mode into MPP");
 
+    // Only U and M are implemented. WARL writes must never create S or the
+    // reserved privilege level, including after MRET.
+    for (mpp = 0; mpp < 4; mpp = mpp + 1) begin
+      @(negedge clk);
+      csr_en = 1'b1;
+      csr_cmd = CSR_CMD_W;
+      csr_addr = CSR_MSTATUS;
+      csr_wdata = mpp << 11;
+      @(negedge clk);
+      clear_inputs();
+      #1;
+      check_cond((mstatus_o[12:11] == 2'b00) || (mstatus_o[12:11] == 2'b11),
+                 "MPP must be implemented U or M");
+      @(negedge clk);
+      mret_exec = 1'b1;
+      @(negedge clk);
+      clear_inputs();
+      #1;
+      check_cond((current_priv_o == 2'b00) || (current_priv_o == 2'b11),
+                 "MRET must enter implemented mode");
+      check_cond(global_mie_o == ((current_priv_o != 2'b11) || mstatus_o[3]),
+                 "U mode must enable machine IRQs");
+      @(negedge clk);
+      trap_enter = 1'b1;
+      @(negedge clk);
+      clear_inputs();
+    end
+
     if (failures != 0) begin
       $display("FAIL: csr_privilege_tb failures=%0d", failures);
-      $finish(1);
+      $fatal(1, "privilege regression failed");
     end
 
     $display("PASS: csr_privilege_tb");

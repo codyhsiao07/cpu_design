@@ -45,8 +45,11 @@ function Invoke-Tb {
   }
 
   $lines = & $Vvp $outExe 2>&1
+  $simExitCode = $LASTEXITCODE
   $lines | Set-Content -Path $logPath
-  if ($LASTEXITCODE -ne 0) {
+  $text = $lines -join "`n"
+  if ($simExitCode -ne 0 -or $text -notmatch "\bPASS\b|All tests passed\." -or
+      $text -match "ASSERT_FAIL|TIMEOUT|FATAL|\bFAIL\b|ERROR:") {
     throw "Run failed for $Top. See $logPath"
   }
 
@@ -149,7 +152,7 @@ $summary += ""
 $summary += "Notes:"
 $summary += "  TEST_FILES/prog_test28_muldiv_smoke.c is compiled with -march=rv32im."
 $summary += "  The smoke build verifies all eight RV32M mnemonics appear in disassembly."
-$summary += "  icache_pipeline_tb is not part of this script because its FAST_SIM path is not a stable pass/fail signal in this repo."
+$summary += "  Run tools/run_regression.py for CPU TEST=1..27 and optional randomized memory timing."
 
 $summary | Set-Content -Path $txtPath
 $summary | ForEach-Object { Write-Host $_ }

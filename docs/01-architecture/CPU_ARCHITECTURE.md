@@ -359,7 +359,7 @@ Trap 時保存 `mepc/mcause/mtval`，PC 重導到 direct-mode `mtvec`；`mret` �
 - Machine timer interrupt：`mtime >= mtimecmp`，cause 7。
 - Machine external interrupt：UART RX 或 software MEIP，cause 11。
 
-同時 pending 時目前優先順序是 external > timer > software。中斷採「先停止前端、讓既有指令排空，再在指令邊界進入 trap」的方式，避免把尚未完成的指令誤算進 `mepc`。
+同時 pending 時目前優先順序是 external > software > timer。中斷採「先停止前端、讓既有指令排空，再在指令邊界進入 trap」的方式，避免把尚未完成的指令誤算進 `mepc`。
 
 FreeRTOS 的 1 kHz tick 就是建立在 machine timer interrupt 上。
 

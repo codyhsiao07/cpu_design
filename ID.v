@@ -485,7 +485,7 @@ module id_stage (
               illegal_instr = 1'b1;
             end
           end
-          default: begin
+          3'b000: begin
             if ((id_instr_i[31:20] == 12'h000) && (rs1 == 5'd0) && (rd == 5'd0)) begin
               is_ecall = 1'b1;
             end else if ((id_instr_i[31:20] == 12'h001) && (rs1 == 5'd0) && (rd == 5'd0)) begin
@@ -496,6 +496,7 @@ module id_stage (
               illegal_instr = 1'b1;
             end
           end
+          default: illegal_instr = 1'b1;
         endcase
       end
       default: begin

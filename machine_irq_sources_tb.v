@@ -176,9 +176,35 @@ module machine_irq_sources_tb;
     #1;
     check_cond(irq_request_o == 1'b0, "global mie gates interrupts");
 
+    // With all three sources pending the architectural order is MEI > MSI > MTI.
+    @(negedge clk);
+    global_mie_i = 1'b1;
+    msie_en_i = 1'b1;
+    mtie_en_i = 1'b1;
+    meie_en_i = 1'b1;
+    msip_we_i = 1'b1;
+    msip_wdata_i = 32'd1;
+    meip_we_i = 1'b1;
+    meip_wdata_i = 32'd0;
+    ext_irq_line_i = 1'b0;
+    mtimecmp_lo_we_i = 1'b1;
+    mtimecmp_lo_wdata_i = 32'd0;
+    mtimecmp_hi_we_i = 1'b1;
+    mtimecmp_hi_wdata_i = 32'd0;
+    @(negedge clk);
+    msip_we_i = 1'b0;
+    meip_we_i = 1'b0;
+    mtimecmp_lo_we_i = 1'b0;
+    mtimecmp_hi_we_i = 1'b0;
+    #1;
+    check_cond(irq_request_o && irq_cause_o == 32'd3, "software has priority over timer");
+    ext_irq_line_i = 1'b1;
+    #1;
+    check_cond(irq_request_o && irq_cause_o == 32'd11, "external has highest priority");
+
     if (failures != 0) begin
       $display("FAIL: machine_irq_sources_tb failures=%0d", failures);
-      $finish(1);
+      $fatal(1, "IRQ source regression failed");
     end
 
     $display("PASS: machine_irq_sources_tb");

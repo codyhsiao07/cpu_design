@@ -19,6 +19,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $repoRoot
 
 function Parse-TestList([string[]]$listIn) {
   $items = @()
@@ -38,31 +40,11 @@ function Compile-Sim {
     [string]$IverilogExe,
     [string]$OutSimExe
   )
-  $src = @(
-    "icache_pipeline_tb.v",
-    "icache_pipeline_top.v",
-    "icache_top.v",
-    "icache.v",
-    "IF.v",
-    "IFID_register.v",
-    "ID.v",
-    "IDEX_register.v",
-    "EX.v",
-    "EXMEM_register.v",
-    "MEM.v",
-    "MEMWB_register.v",
-    "WB.v",
-    "hazard_unit.v",
-    "forward_unit.v",
-    "dcache.v",
-    "L2_cache.v",
-    "I_D_arbitration.v",
-    "branch_predictor.v",
-    "uart_rx.v",
-    "uart_bootloader.v",
-    "MIG_DDR3_interface.v"
-  )
-  & $IverilogExe "-g2005-sv" "-o" $OutSimExe @src
+  $src = @(Get-ChildItem -LiteralPath $repoRoot -Filter "*.v" -File |
+    ForEach-Object { $_.FullName })
+  $simParent = Split-Path -Parent $OutSimExe
+  if ($simParent) { New-Item -ItemType Directory -Path $simParent -Force | Out-Null }
+  & $IverilogExe "-g2005-sv" "-DFAST_SIM" "-s" "icache_pipeline_tb" "-o" $OutSimExe @src
   if ($LASTEXITCODE -ne 0) {
     throw "Compile failed."
   }
@@ -106,6 +88,7 @@ function Run-One {
   }
 
   $lines = & $VvpExe $Sim @plus 2>&1
+  $simExitCode = $LASTEXITCODE
   $lines | Set-Content -Path $LogPath
 
   $hasPass = $false
@@ -114,12 +97,12 @@ function Run-One {
     if ($ln -match "PASS:\s+test") {
       $hasPass = $true
     }
-    if ($ln -match "ASSERT_FAIL|TIMEOUT|FATAL|FAIL") {
+    if ($ln -match "ASSERT_FAIL|TIMEOUT|FATAL|FAIL|ERROR:") {
       $hasFail = $true
     }
   }
 
-  if ($hasPass -and -not $hasFail) { return "PASS" }
+  if ($simExitCode -eq 0 -and $hasPass -and -not $hasFail) { return "PASS" }
   return "FAIL"
 }
 

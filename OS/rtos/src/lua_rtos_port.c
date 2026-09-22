@@ -1,20 +1,12 @@
 #include <stddef.h>
 #include <stdint.h>
+#include <math.h>
 
 #include "uart.h"
 
 static int ascii_space( char value ) {
     return value == ' ' || value == '\t' || value == '\n' ||
            value == '\r' || value == '\f' || value == '\v';
-}
-
-static float quiet_nan( void ) {
-    union {
-        uint32_t bits;
-        float value;
-    } data;
-    data.bits = 0x7FC00000u;
-    return data.value;
 }
 
 static int copy_text( char * buffer, size_t size, const char * text ) {
@@ -59,10 +51,11 @@ int rtos_lua_integer2str( char * buffer, size_t size, int32_t value ) {
     if( value >= 0 ) {
         return format_unsigned( buffer, size, ( uint32_t ) value );
     }
-    buffer[ 0 ] = '-';
     if( size == 1u ) {
+        buffer[ 0 ] = '\0';
         return 0;
     }
+    buffer[ 0 ] = '-';
     magnitude = ( uint32_t ) ( -( value + 1 ) ) + 1u;
     count = format_unsigned( buffer + 1, size - 1u, magnitude );
     return count + 1;
@@ -116,6 +109,9 @@ int rtos_lua_number2str( char * buffer, size_t size, float value ) {
     if( value != value ) {
         return copy_text( buffer, size, "nan" );
     }
+    if( isinf( value ) ) {
+        return copy_text( buffer, size, signbit( value ) ? "-inf" : "inf" );
+    }
     if( value < 0.0f ) {
         negative = 1;
         value = -value;
@@ -132,6 +128,10 @@ int rtos_lua_number2str( char * buffer, size_t size, float value ) {
         exponent--;
     }
     if( size == 0u ) {
+        return 0;
+    }
+    if( size == 1u ) {
+        buffer[ 0 ] = '\0';
         return 0;
     }
     count = 0;
@@ -204,8 +204,12 @@ unsigned int rtos_lua_seed( void ) {
 
 float strtof( const char * text, char ** endptr ) {
     const char * start = text;
-    float value = 0.0f;
-    float fraction = 0.1f;
+    // Accumulate a bounded significand in double and round to float once.
+    // Repeated float arithmetic misparsed even exactly representable values
+    // such as 4294967296.0 before Lua executed its first operation.
+    double value = 0.0;
+    int significant_digits = 0;
+    int decimal_exponent = 0;
     int negative = 0;
     int digits = 0;
     int exponent = 0;
@@ -219,15 +223,29 @@ float strtof( const char * text, char ** endptr ) {
         text++;
     }
     while( *text >= '0' && *text <= '9' ) {
-        value = value * 10.0f + ( float ) ( *text - '0' );
+        int digit = *text - '0';
+        if( digit != 0 || significant_digits != 0 ) {
+            if( significant_digits < 18 ) {
+                value = value * 10.0 + ( double ) digit;
+                significant_digits++;
+            } else {
+                decimal_exponent++;
+            }
+        }
         text++;
         digits++;
     }
     if( *text == '.' ) {
         text++;
         while( *text >= '0' && *text <= '9' ) {
-            value += ( float ) ( *text - '0' ) * fraction;
-            fraction *= 0.1f;
+            int digit = *text - '0';
+            if( significant_digits == 0 && digit == 0 ) {
+                decimal_exponent--;
+            } else if( significant_digits < 18 ) {
+                value = value * 10.0 + ( double ) digit;
+                significant_digits++;
+                decimal_exponent--;
+            }
             text++;
             digits++;
         }
@@ -242,26 +260,45 @@ float strtof( const char * text, char ** endptr ) {
             text = exponent_start;
         } else {
             while( *text >= '0' && *text <= '9' ) {
-                if( exponent < 1000 ) {
+                // Larger than the maximum input length, so long mantissas
+                // can still cancel a valid exponent without signed overflow.
+                if( exponent < 1000000 ) {
                     exponent = exponent * 10 + ( *text - '0' );
+                    if( exponent > 1000000 ) exponent = 1000000;
                 }
                 text++;
             }
-            if( exponent_negative ) {
-                while( exponent-- > 0 ) {
-                    value *= 0.1f;
-                }
-            } else {
-                while( exponent-- > 0 ) {
-                    value *= 10.0f;
-                }
+            decimal_exponent += exponent_negative ? -exponent : exponent;
+        }
+    }
+    if( value != 0.0 ) {
+        if( decimal_exponent > 100 ) {
+            value = INFINITY;
+        } else if( decimal_exponent < -100 ) {
+            value = 0.0;
+        } else {
+            while( decimal_exponent >= 16 ) {
+                value *= 1.0e16;
+                decimal_exponent -= 16;
+            }
+            while( decimal_exponent <= -16 ) {
+                value *= 1.0e-16;
+                decimal_exponent += 16;
+            }
+            while( decimal_exponent > 0 ) {
+                value *= 10.0;
+                decimal_exponent--;
+            }
+            while( decimal_exponent < 0 ) {
+                value *= 0.1;
+                decimal_exponent++;
             }
         }
     }
     if( endptr != NULL ) {
         *endptr = ( char * ) ( digits == 0 ? start : text );
     }
-    return negative ? -value : value;
+    return ( float ) ( negative ? -value : value );
 }
 
 float rtos_lua_strx2number( const char * text, char ** endptr ) {
@@ -322,12 +359,15 @@ float rtos_lua_strx2number( const char * text, char ** endptr ) {
             text = exponent_start;
         } else {
             while( *text >= '0' && *text <= '9' ) {
-                exponent = exponent * 10 + ( *text - '0' );
+                // Saturate while consuming every digit. A huge exponent must
+                // not overflow signed int or monopolize the Lua task in C.
+                if( exponent < 1000 ) {
+                    exponent = exponent * 10 + ( *text - '0' );
+                    if( exponent > 1000 ) exponent = 1000;
+                }
                 text++;
             }
-            while( exponent-- > 0 ) {
-                value *= exponent_negative ? 0.5f : 2.0f;
-            }
+            value = ldexpf( value, exponent_negative ? -exponent : exponent );
         }
     }
     if( endptr != NULL ) {
@@ -436,122 +476,7 @@ char * strerror( int error ) {
     return "RTOS I/O unavailable";
 }
 
-float fabsf( float value ) {
-    return value < 0.0f ? -value : value;
-}
-
-float floorf( float value ) {
-    int32_t integer;
-    if( value != value || value >= 2147483520.0f || value <= -2147483648.0f ) {
-        return value;
-    }
-    integer = ( int32_t ) value;
-    if( ( float ) integer > value ) {
-        integer--;
-    }
-    return ( float ) integer;
-}
-
-float ceilf( float value ) {
-    int32_t integer;
-    if( value != value || value >= 2147483520.0f || value <= -2147483648.0f ) {
-        return value;
-    }
-    integer = ( int32_t ) value;
-    if( ( float ) integer < value ) {
-        integer++;
-    }
-    return ( float ) integer;
-}
-
-float fmodf( float left, float right ) {
-    float quotient;
-    int32_t truncated;
-    if( right == 0.0f || left != left || right != right ) {
-        return quiet_nan();
-    }
-    quotient = left / right;
-    if( quotient >= 2147483520.0f || quotient <= -2147483648.0f ) {
-        return left;
-    }
-    truncated = ( int32_t ) quotient;
-    return left - ( ( float ) truncated * right );
-}
-
-float sqrtf( float value ) {
-    float estimate;
-    int i;
-    if( value < 0.0f ) {
-        return quiet_nan();
-    }
-    if( value == 0.0f ) {
-        return 0.0f;
-    }
-    estimate = value > 1.0f ? value : 1.0f;
-    for( i = 0; i < 12; i++ ) {
-        estimate = 0.5f * ( estimate + value / estimate );
-    }
-    return estimate;
-}
-
-float powf( float base, float exponent ) {
-    int32_t power;
-    uint32_t magnitude;
-    float result = 1.0f;
-
-    if( exponent == 0.5f ) {
-        return sqrtf( base );
-    }
-    if( exponent != floorf( exponent ) || exponent > 63.0f || exponent < -63.0f ) {
-        return quiet_nan();
-    }
-    power = ( int32_t ) exponent;
-    magnitude = ( uint32_t ) ( power < 0 ? -power : power );
-    while( magnitude != 0u ) {
-        if( ( magnitude & 1u ) != 0u ) {
-            result *= base;
-        }
-        base *= base;
-        magnitude >>= 1u;
-    }
-    return power < 0 ? 1.0f / result : result;
-}
-
-float ldexpf( float value, int exponent ) {
-    while( exponent > 0 ) {
-        value *= 2.0f;
-        exponent--;
-    }
-    while( exponent < 0 ) {
-        value *= 0.5f;
-        exponent++;
-    }
-    return value;
-}
-
-float frexpf( float value, int * exponent ) {
-    int output_exponent = 0;
-    float sign = 1.0f;
-
-    if( value < 0.0f ) {
-        sign = -1.0f;
-        value = -value;
-    }
-    if( value == 0.0f || value != value ) {
-        *exponent = 0;
-        return value * sign;
-    }
-    while( value >= 1.0f ) {
-        value *= 0.5f;
-        output_exponent++;
-    }
-    while( value < 0.5f ) {
-        value *= 2.0f;
-        output_exponent--;
-    }
-    *exponent = output_exponent;
-    return value * sign;
-}
+/* IEEE-754 math primitives come from the toolchain soft-float libm. */
 
 void abort( void ) {
     __asm volatile ( "csrc mstatus, 8" );

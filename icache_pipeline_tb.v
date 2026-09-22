@@ -291,8 +291,9 @@ module icache_pipeline_tb;
   reg [4:0]  expect_rd;
   reg [31:0] expect_val;
   reg        require_linefill;
-  reg [8*64-1:0] memfile;
-  reg [8*64-1:0] memfile_try;
+  // Leave room for absolute build paths, including nested output directories.
+  reg [8*1024-1:0] memfile;
+  reg [8*1024-1:0] memfile_try;
   reg            memfile_found;
   integer max_cycles;
   integer memfile_fd;
@@ -304,8 +305,8 @@ module icache_pipeline_tb;
   integer stall_watchdog_max;
   integer trace_en;
   integer cov_en;
-  reg [8*128-1:0] trace_file;
-  reg [8*128-1:0] cov_file;
+  reg [8*1024-1:0] trace_file;
+  reg [8*1024-1:0] cov_file;
   integer trace_fd;
   integer cov_fd;
   integer cov_active_cycles;
@@ -331,7 +332,7 @@ module icache_pipeline_tb;
   integer cov_i_rsp_stall_cur;
   integer cov_d_rsp_stall_cur;
   integer state_cov_en;
-  reg [8*128-1:0] state_cov_file;
+  reg [8*1024-1:0] state_cov_file;
   integer state_cov_fd;
   reg [6:0]   cov_ic_state_seen;
   reg [11:0]  cov_dc_state_seen;
@@ -459,39 +460,41 @@ module icache_pipeline_tb;
   endfunction
 
   task resolve_tb_memfile;
-    inout [8*64-1:0] path_io;
+    inout [8*1024-1:0] path_io;
     output           found_o;
     integer          fd_local;
     begin
       found_o = 1'b0;
       memfile_try = path_io;
       fd_local = $fopen(memfile_try, "r");
+      // Format trimmed text: concatenating a packed path drops the prefix
+      // when assigned back to a register with the same width.
       if (fd_local == 0) begin
-        memfile_try = {"./", path_io};
+        $sformat(memfile_try, "./%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../", path_io};
+        $sformat(memfile_try, "../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../", path_io};
+        $sformat(memfile_try, "../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../", path_io};
+        $sformat(memfile_try, "../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../", path_io};
+        $sformat(memfile_try, "../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../../", path_io};
+        $sformat(memfile_try, "../../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../../../", path_io};
+        $sformat(memfile_try, "../../../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local != 0) begin
@@ -1779,9 +1782,9 @@ module mig_7series_0_mig (
 
   reg [7:0] mem_b [0:MEM_BYTES-1];
   reg [31:0] init_mem [0:MEM_WORDS-1];
-  reg [8*256-1:0] memfile;
-  reg [8*64-1:0] memfile_base;
-  reg [8*256-1:0] memfile_try;
+  reg [8*1024-1:0] memfile;
+  reg [8*1024-1:0] memfile_base;
+  reg [8*1024-1:0] memfile_try;
   reg             memfile_found;
   reg             memfile_is_plusarg;
   integer         rand_mem_en;
@@ -1814,8 +1817,8 @@ module mig_7series_0_mig (
   endfunction
 
   task resolve_mig_memfile;
-    inout [8*256-1:0] path_io;
-    input [8*64-1:0]  base_io;
+    inout [8*1024-1:0] path_io;
+    input [8*1024-1:0]  base_io;
     input             skip_fallback_i;
     output            found_o;
     integer           fd_local;
@@ -1824,31 +1827,31 @@ module mig_7series_0_mig (
       memfile_try = path_io;
       fd_local = $fopen(memfile_try, "r");
       if (fd_local == 0) begin
-        memfile_try = {"./", path_io};
+        $sformat(memfile_try, "./%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../", path_io};
+        $sformat(memfile_try, "../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../", path_io};
+        $sformat(memfile_try, "../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../", path_io};
+        $sformat(memfile_try, "../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../", path_io};
+        $sformat(memfile_try, "../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../../", path_io};
+        $sformat(memfile_try, "../../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local == 0) begin
-        memfile_try = {"../../../../../../", path_io};
+        $sformat(memfile_try, "../../../../../../%0s", path_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
@@ -1856,39 +1859,39 @@ module mig_7series_0_mig (
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"./", base_io};
+        $sformat(memfile_try, "./%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"TEST_FILES/", base_io};
+        $sformat(memfile_try, "TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"./TEST_FILES/", base_io};
+        $sformat(memfile_try, "./TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../../../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../../../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../../../../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../../../../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../../../../../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../../../../../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if ((fd_local == 0) && !skip_fallback_i && (base_io != 0)) begin
-        memfile_try = {"../../../../../../TEST_FILES/", base_io};
+        $sformat(memfile_try, "../../../../../../TEST_FILES/%0s", base_io);
         fd_local = $fopen(memfile_try, "r");
       end
       if (fd_local != 0) begin
@@ -1900,7 +1903,7 @@ module mig_7series_0_mig (
   endtask
 
   task try_mig_candidate;
-    input [8*256-1:0] cand_i;
+    input [8*1024-1:0] cand_i;
     inout              found_io;
     begin
       if (!found_io) begin
@@ -2010,7 +2013,7 @@ module mig_7series_0_mig (
       end
     end
     resolve_mig_memfile(memfile, memfile_base, memfile_is_plusarg, memfile_found);
-    if (!memfile_found) begin
+    if (!memfile_found && !memfile_is_plusarg) begin
       // Retry with local default path when simulator cwd differs.
       memfile = "TEST_FILES/program_ddr.mem";
       memfile_base = "program_ddr.mem";

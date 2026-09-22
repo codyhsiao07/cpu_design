@@ -6,7 +6,7 @@ import sys
 
 def parse_trace(path):
     rows = []
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:
         for ln_no, raw in enumerate(f, 1):
             s = raw.strip()
             if not s or s.startswith("#"):
@@ -17,7 +17,9 @@ def parse_trace(path):
             if m:
                 cyc = int(m.group(1))
                 rd = int(m.group(2))
-                val = int(m.group(3), 16) & 0xFFFFFFFF
+                val = int(m.group(3), 16)
+                if not (0 <= rd < 32 and 0 <= val <= 0xFFFFFFFF):
+                    raise ValueError(f"{path}:{ln_no}: register/value outside RV32 range")
                 rows.append((ln_no, cyc, rd, val))
                 continue
 
@@ -25,7 +27,9 @@ def parse_trace(path):
             m = re.search(r"WB:\s*x(\d+)\s*<=\s*0x([0-9a-fA-F]+)", s)
             if m:
                 rd = int(m.group(1))
-                val = int(m.group(2), 16) & 0xFFFFFFFF
+                val = int(m.group(2), 16)
+                if not (0 <= rd < 32 and 0 <= val <= 0xFFFFFFFF):
+                    raise ValueError(f"{path}:{ln_no}: register/value outside RV32 range")
                 rows.append((ln_no, -1, rd, val))
                 continue
 
@@ -58,8 +62,15 @@ def main():
     )
     args = ap.parse_args()
 
-    ref_rows = parse_trace(args.ref)
-    dut_rows = parse_trace(args.dut)
+    try:
+        ref_rows = parse_trace(args.ref)
+        dut_rows = parse_trace(args.dut)
+    except (OSError, ValueError) as exc:
+        print(f"DIFF_FAIL\n  {exc}")
+        return 1
+    if not ref_rows or not dut_rows:
+        print("DIFF_FAIL\n  empty trace: no commit evidence to compare")
+        return 1
     if args.squash_dup:
         ref_rows = squash_consecutive_duplicates(ref_rows)
         dut_rows = squash_consecutive_duplicates(dut_rows)

@@ -1,6 +1,6 @@
-﻿# CPU 設計專案（RV32I + I$/D$ + L2 + DDR2 MIG）
+﻿# CPU 設計專案（RV32IM + I$/D$ + L2 + DDR2 MIG）
 
-本專案目前主線是整合式 5-stage RV32I CPU，包含：
+本專案目前主線是整合式 5-stage RV32IM CPU（含 Zicsr 與精簡 machine-mode CSR），包含：
 - L1 I-Cache：`icache.v`（由 `icache_top.v` 包裝）
 - L1 D-Cache：`dcache.v`
 - Unified L2 + I/D 仲裁：`L2_cache.v`、`I_D_arbitration.v`
@@ -163,6 +163,19 @@ P -> Q -> R        H
 - [`docs/LEGACY_DOCUMENT_MIGRATION.md`](docs/LEGACY_DOCUMENT_MIGRATION.md)：舊報告檔名、已遷移重點與正式文件的對照紀錄。
 
 ## 6. 本地回歸現況
+
+可重現的本地 RTL／裸機韌體回歸（需要 Python、Icarus 與 RISC-V GCC/binutils）：
+
+```powershell
+python -m unittest discover -s tools -p "test_*.py" -v
+python tools/run_regression.py --seed-count 5
+```
+
+可用 `--suite unit`、`--suite cpu`、`--suite firmware` 分別執行；工具路徑可透過
+`--gcc`、`--objcopy`、`--iverilog`、`--vvp` 指定。每個程序有 timeout，必須 exit 0、
+出現 PASS 且無 failure marker；命令、耗時與結果存於 `build_regression/summary.json`。
+這不包含外部 FreeRTOS kernel build、Vivado timing 或實板測試。
+本次檢查與修正的證據見 [2026-09-06 檢查報告](docs/06-verification/AUDIT_2026-09-06.md)。
 
 近期本地回歸已驗證：
 - `make mem`：PASS

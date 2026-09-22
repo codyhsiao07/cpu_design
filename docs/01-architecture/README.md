@@ -2,6 +2,15 @@
 
 > 這個資料夾解釋「一條 RISC-V 指令進入 CPU 後，如何被取指、解碼、執行、提交，以及遇到相依、分支、例外和中斷時怎麼處理」。
 
+## CSR／Interrupt 與 FreeRTOS 核心成果
+
+[![CSR／Interrupt 與 FreeRTOS 核心成果系統流程圖](diagrams/csr-interrupt-freertos-core-results.svg)](diagrams/csr-interrupt-freertos-core-results.html)
+
+圖中濃縮 machine-mode trap、timer／UART interrupt、1 kHz tick、搶占式排程、context switch、
+Task／Queue、VGA multi-task demo 與 performance counters 的關係。可縮放版本見
+[SVG](diagrams/csr-interrupt-freertos-core-results.svg)，產生程式是
+[`tools/generate_csr_interrupt_freertos_diagram.py`](../../tools/generate_csr_interrupt_freertos_diagram.py)。
+
 ## CPU 內部層級
 
 ```mermaid

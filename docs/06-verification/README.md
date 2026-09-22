@@ -47,6 +47,9 @@ flowchart LR
 
 ## 建議工作方式
 
+本次主線檢查的問題、修正前後證據、測試範圍與後續改善優先順序，見
+[2026-09-06 檢查報告](AUDIT_2026-09-06.md)。
+
 1. 先在 `VERIFICATION_PLAN` 查 feature-to-test matrix。
 2. 到對應測試文件複製指令。
 3. 到 `EXPECTED_RESULTS` 判定 PASS／FAIL，不要只看 process exit code。

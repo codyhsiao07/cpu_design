@@ -231,9 +231,30 @@ module csr_file_tb;
     check_read(CSR_MSTATUS, 32'h0000_1800, 34);
     check_read(CSR_MTVAL, 32'h0000_0000, 38);
 
+    // This core implements only direct mtvec. Readback must advertise MODE=0.
+    apply_write(CSR_MTVEC, CSR_CMD_W, 32'h8000_0201, mtvec_o, 39);
+    check_read(CSR_MTVEC, 32'h8000_0200, 40);
+    apply_write(CSR_MTVEC, CSR_CMD_W, 32'h8000_0203, 32'h8000_0200, 41);
+    check_read(CSR_MTVEC, 32'h8000_0200, 42);
+
+    // Reading the hardware pending view must not latch it into mip_sw.
+    apply_write(CSR_MIP, CSR_CMD_W, 32'd0, 32'h888, 43);
+    ext_irq_pending = 1'b1;
+    #1;
+    apply_write(CSR_MIP, CSR_CMD_S, 32'd0, 32'h800, 44);
+    ext_irq_pending = 1'b0;
+    #1;
+    check_read(CSR_MIP, 32'd0, 45);
+    timer_irq_pending = 1'b1;
+    #1;
+    apply_write(CSR_MIP, CSR_CMD_S, 32'h8, 32'h80, 46);
+    timer_irq_pending = 1'b0;
+    #1;
+    check_read(CSR_MIP, 32'h8, 47);
+
     if (failures != 0) begin
       $display("FAIL: csr_file_tb failures=%0d", failures);
-      $finish(1);
+      $fatal(1, "CSR regression failed");
     end
 
     $display("PASS: csr_file_tb");

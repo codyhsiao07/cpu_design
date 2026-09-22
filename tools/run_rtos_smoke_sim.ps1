@@ -49,7 +49,9 @@ $plusArgs = @(
 )
 
 $lines = & $Vvp $simExe @plusArgs 2>&1
+$simExitCode = $LASTEXITCODE
 $lines | Tee-Object -FilePath $log
+if ($simExitCode -ne 0) { throw "vvp failed: exit $simExitCode. Log: $log" }
 
 $text = $lines -join "`n"
 if ($text -notmatch "RTOS_SMOKE_PASS") {

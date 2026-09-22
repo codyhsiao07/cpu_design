@@ -18,10 +18,12 @@ param(
   [int]$TraceSeed = 1,
   [string]$RefTraceDir = "",
   [string]$PythonExe = "python",
-  [int]$DiffSquashDup = 1
+  [int]$DiffSquashDup = 0
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $repoRoot
 
 function Parse-TestList([string[]]$listIn) {
   $items = @()
@@ -60,15 +62,22 @@ function Invoke-SimOne {
     "+COV_EN=1",
     "+COV_FILE=$CovPath"
   )
+  Remove-Item -LiteralPath $TracePath, $CovPath -Force -ErrorAction SilentlyContinue
   $lines = & $Vvp $SimExe @plus 2>&1
+  $simExitCode = $LASTEXITCODE
   $lines | Set-Content -Path $LogPath
   $hasPass = $false
   $hasFail = $false
   foreach ($ln in $lines) {
     if ($ln -match "PASS:\s+test") { $hasPass = $true }
-    if ($ln -match "ASSERT_FAIL|TIMEOUT|FATAL|FAIL") { $hasFail = $true }
+    if ($ln -match "ASSERT_FAIL|TIMEOUT|FATAL|FAIL|ERROR:") { $hasFail = $true }
   }
-  if ($hasPass -and -not $hasFail) { return "PASS" }
+  $artifactsOk = (Test-Path -LiteralPath $TracePath) -and (Test-Path -LiteralPath $CovPath)
+  if ($artifactsOk) {
+    $artifactsOk = ((Get-Item -LiteralPath $TracePath).Length -gt 0) -and
+                   ((Get-Item -LiteralPath $CovPath).Length -gt 0)
+  }
+  if ($simExitCode -eq 0 -and $hasPass -and -not $hasFail -and $artifactsOk) { return "PASS" }
   return "FAIL"
 }
 
@@ -194,10 +203,16 @@ foreach ($r in $traceRows) {
       $out | Set-Content -Path $dst
       if ($LASTEXITCODE -eq 0) { $status = "PASS" } else { $status = "FAIL" }
     } else {
-      "SKIP: no ref trace $cand" | Set-Content -Path $dst
+      $status = "FAIL"
+      "FAIL: requested reference trace missing: $cand" | Set-Content -Path $dst
     }
   } else {
-    "SKIP: RefTraceDir empty or python unavailable" | Set-Content -Path $dst
+    if ($RefTraceDir -ne "") {
+      $status = "FAIL"
+      "FAIL: reference comparison requested but python unavailable" | Set-Content -Path $dst
+    } else {
+      "SKIP: RefTraceDir empty" | Set-Content -Path $dst
+    }
   }
 
   $diffRows += [pscustomobject]@{

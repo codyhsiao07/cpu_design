@@ -3,10 +3,13 @@
 // Accelerated full-image CRC regression. UART decoder outputs are driven
 // directly so the real Lua image can be checked without simulating billions
 // of serial bit clocks.
-module uart_bootloader_large_crc_tb;
-  localparam integer IMAGE_BYTES = 213580;
+module uart_bootloader_large_crc_tb #(
+  parameter integer IMAGE_BYTES = 213580,
+  parameter [31:0] IMAGE_CRC32 = 32'hD360D14F
+);
   localparam integer IMAGE_WORDS = (IMAGE_BYTES + 3) / 4;
-  localparam [31:0] IMAGE_CRC32 = 32'hD360D14F;
+  reg [4095:0] memfile;
+  integer memfile_fd;
 
   reg clk = 1'b0;
   reg init_calib_complete = 1'b0;
@@ -148,7 +151,16 @@ module uart_bootloader_large_crc_tb;
   endtask
 
   initial begin
-    $readmemh("build_rtos_apps/lua/rtos_lua.mem", payload_words);
+    if (IMAGE_BYTES < 1 || IMAGE_BYTES > 524288)
+      $fatal(1, "IMAGE_BYTES must be 1..524288 for this TB memory model");
+    memfile = "build_rtos_apps/lua/rtos_lua.mem";
+    if ($value$plusargs("MEMFILE=%s", memfile)) begin end
+    memfile_fd = $fopen(memfile, "r");
+    if (memfile_fd == 0) $fatal(1, "cannot open MEMFILE");
+    $fclose(memfile_fd);
+    $readmemh(memfile, payload_words);
+    for (i = 0; i < IMAGE_WORDS; i = i + 1)
+      if ((^payload_words[i]) === 1'bx) $fatal(1, "missing/unknown image word %0d", i);
     reference_crc = 32'hFFFF_FFFF;
     for (i = 0; i < IMAGE_BYTES; i = i + 1)
       reference_crc = dut.crc32_byte(
@@ -172,11 +184,11 @@ module uart_bootloader_large_crc_tb;
       $display("[LARGE_CRC_TB] FAIL state=%0d bytes=%0d expected=%08x computed=%08x",
                debug_state_o, dut.byte_cnt, dut.expected_crc_q,
                dut.payload_crc_q ^ 32'hFFFF_FFFF);
-      $finish(1);
+      $fatal(1, "boot image did not complete");
     end
     if (!boot_ack_seen) begin
       $display("[LARGE_CRC_TB] FAIL missing loader ACK");
-      $finish(1);
+      $fatal(1, "boot image was not acknowledged");
     end
     $display("[LARGE_CRC_TB] PASS bytes=%0d crc=%08x",
              dut.byte_cnt, dut.payload_crc_q ^ 32'hFFFF_FFFF);

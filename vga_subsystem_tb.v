@@ -42,14 +42,15 @@ module vga_subsystem_tb;
   always #5 cpu_clk = ~cpu_clk;
   always #5 vga_clk = ~vga_clk;
 
-  task cpu_write32;
+  task cpu_write_mask;
     input [31:0] addr;
     input [31:0] data;
+    input [3:0] mask;
     begin
       @(posedge cpu_clk);
       cpu_req_addr  <= addr;
       cpu_req_wdata <= data;
-      cpu_req_wstrb <= 4'hF;
+      cpu_req_wstrb <= mask;
       cpu_req_we    <= 1'b1;
       cpu_req_valid <= 1'b1;
       @(posedge cpu_clk);
@@ -58,6 +59,14 @@ module vga_subsystem_tb;
       cpu_req_wstrb <= 4'h0;
       wait (cpu_rsp_valid === 1'b1);
       @(posedge cpu_clk);
+    end
+  endtask
+
+  task cpu_write32;
+    input [31:0] addr;
+    input [31:0] data;
+    begin
+      cpu_write_mask(addr, data, 4'hf);
     end
   endtask
 
@@ -107,6 +116,15 @@ module vga_subsystem_tb;
     cpu_read32(32'h5000_4000, 32'h89ab_cdef);
     cpu_write32(32'h5000_7FFC, 32'h0000_0001);
     cpu_read32(32'h5000_7FFC, 32'h0000_0002);
+    // SB/SH to upper bytes must not modify the low-byte buffer selector.
+    cpu_write_mask(32'h5000_7FFD, 32'h0000_0000, 4'b0010);
+    cpu_read32(32'h5000_7FFC, 32'h0000_0002);
+    cpu_write_mask(32'h5000_7FFE, 32'h0000_0000, 4'b1100);
+    cpu_read32(32'h5000_7FFC, 32'h0000_0002);
+    cpu_write_mask(32'h5000_7FFC, 32'h0000_0000, 4'b0000);
+    cpu_read32(32'h5000_7FFC, 32'h0000_0002);
+    cpu_write_mask(32'h5000_0000, 32'h00aa_00bb, 4'b0101);
+    cpu_read32(32'h5000_0000, 32'h12aa_56bb);
 
     repeat (4200000) @(posedge vga_clk);
     cpu_read32(32'h5000_7FFC, 32'h0000_0003);

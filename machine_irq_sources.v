@@ -92,8 +92,8 @@ module machine_irq_sources (
 
     assign irq_request_o = irq_external_take | irq_timer_take | irq_software_take;
     assign irq_cause_o   = irq_external_take ? 32'd11 :
-                           irq_timer_take    ? 32'd7  :
                            irq_software_take ? 32'd3  :
+                           irq_timer_take    ? 32'd7  :
                                                32'd0;
 
 endmodule

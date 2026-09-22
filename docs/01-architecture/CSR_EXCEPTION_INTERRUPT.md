@@ -299,7 +299,7 @@ flowchart LR
 |---|---:|---:|---|
 | `mstatus` | `0x300` | 0 | MIE[3]、MPIE[7]、MPP[12:11] |
 | `mie` | `0x304` | 0 | MSIE[3]、MTIE[7]、MEIE[11] |
-| `mtvec` | `0x305` | 0 | trap handler base；redirect 時低 2 bit 清 0 |
+| `mtvec` | `0x305` | 0 | direct trap handler base；寫入與讀回的 MODE[1:0] 固定為 0 |
 | `mscratch` | `0x340` | 0 | machine handler scratch storage |
 | `mepc` | `0x341` | 0 | exception/interrupt return PC；低 2 bit 強制 0 |
 | `mcause` | `0x342` | 0 | bit31=interrupt，低位為 cause code |
@@ -319,7 +319,8 @@ bit 7      MPIE  Trap 前的 MIE 保存位置
 bits 12:11 MPP   Trap 前 privilege mode
 ```
 
-其他 bit 寫入會被 writable mask 忽略。
+其他 bit 寫入會被 writable mask 忽略。MPP 是 WARL，僅接受 U(00)／M(11)；
+寫入未實作的 S(01) 或保留值(10) 時讀回 U，避免 `mret` 進入未實作模式。
 
 ### 6.1 MIE
 
@@ -329,7 +330,9 @@ bits 12:11 MPP   Trap 前 privilege mode
 mstatus.MIE = 0
 ```
 
-CPU 就不會接收 machine interrupt。`mip` 仍可能顯示 pending；pending 與 take 是兩件不同的事。
+**目前在 M-mode 時** CPU 不會接收 machine interrupt。`mip` 仍可能顯示 pending；pending 與 take 是兩件不同的事。
+目前在 U-mode 時，machine interrupt 的全域條件不受 MIE 限制，仍需對應 `mie` bit 與 source pending。
+因此 `csr_file.global_mie_o` 是當前權限下的有效全域允許訊號，不一定等於原始 MIE bit。
 
 ### 6.2 Trap entry
 
@@ -393,6 +396,8 @@ mip.MTIP = mip_sw[7]  | timer_irq_pending
 mip.MEIP = mip_sw[11] | external_irq_pending
 ```
 
+CSRRS／CSRRC 的寫入只修改 `mip_sw`，不把硬體 pending read view 複製進軟體 latch；
+讀取 `mip` 後硬體訊號解除，對應讀值也必須解除。
 因此如果硬體 source 還維持 1，對 `mip` 寫 0 也不能讓讀值變 0。必須先處理真正來源，例如：
 
 - Timer handler 把 `mtimecmp` 更新到未來。
@@ -401,7 +406,7 @@ mip.MEIP = mip_sw[11] | external_irq_pending
 
 ## 8. `mtvec`
 
-CSR 可保存 32-bit `mtvec`，但目前 redirect 使用：
+目前只支援 direct mode；CSR 寫入時將 MODE[1:0] 固定為 0，讀回也反映相同限制。redirect 使用：
 
 ```text
 trap_vector = {mtvec[31:2], 2'b00}
@@ -749,7 +754,7 @@ software_take = MIE && MSIE && software_pending
 flowchart LR
     PEND["source pending<br/>mip"] --> LOCAL{"對應 mie bit = 1？"}
     LOCAL -->|"否"| WAIT["保持 pending，不 take"]
-    LOCAL -->|"是"| GLOBAL{"mstatus.MIE = 1？"}
+    LOCAL -->|"是"| GLOBAL{"目前在 U-mode<br/>或 mstatus.MIE = 1？"}
     GLOBAL -->|"否"| WAIT
     GLOBAL -->|"是"| ARB{"固定優先序仲裁"}
     ARB --> EXT["external：cause 11"]
@@ -768,11 +773,12 @@ flowchart LR
 
 ```text
 Machine external (11)
-    > Machine timer (7)
     > Machine software (3)
+    > Machine timer (7)
 ```
 
-這是 [`machine_irq_sources.v`](../../machine_irq_sources.v) 中 cause mux 的實際順序。它是本專案的實作選擇，不應誤認為完整 PLIC priority model；目前沒有 PLIC。
+這是 [`machine_irq_sources.v`](../../machine_irq_sources.v) 中 cause mux 的實際順序，
+依照 [RISC-V machine interrupt priority](https://docs.riscv.org/reference/isa/priv/machine.html)。目前沒有 PLIC。
 
 ## 18. Machine timer
 
@@ -839,7 +845,7 @@ UART RX hardware latch 只能保留目前資料與 overrun 狀態。當 byte 抵
 MMIO `0x4000_0018` bit0 控制 synthetic MSIP。當：
 
 ```text
-MSIP=1 && mie.MSIE=1 && mstatus.MIE=1
+MSIP=1 && mie.MSIE=1 && (目前為 U-mode || mstatus.MIE=1)
 ```
 
 就產生 machine software interrupt，`mcause=0x8000_0003`。
@@ -1052,7 +1058,7 @@ mcause = 0x8000000B
 
 ### 28.5 為何 `mtvec` mode沒有 vectored效果？
 
-目前只實作 direct base redirect，低兩位被忽略。
+目前只實作 direct base redirect，MODE 低兩位在寫入時固定為 0，讀回為 0。
 
 ## 29. 驗證
 

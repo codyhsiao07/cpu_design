@@ -125,7 +125,9 @@ module csr_file (
     // Old value for CSR RMW operation
     // ------------------------------------------
     always @(*) begin
-        csr_old = csr_rdata;
+        // Hardware pending lines are part of the read view only. RMW must
+        // modify the software latch without copying transient IRQs into it.
+        csr_old = (csr_addr == CSR_MIP) ? mip_sw : csr_rdata;
     end
 
     // ------------------------------------------
@@ -151,7 +153,8 @@ module csr_file (
         mstatus_wr_value = mstatus;
         mstatus_wr_value[3]    = csr_new[3];
         mstatus_wr_value[7]    = csr_new[7];
-        mstatus_wr_value[12:11]= csr_new[12:11];
+        // Only U and M are implemented. Map unsupported WARL values to U.
+        mstatus_wr_value[12:11]= (csr_new[12:11] == PRIV_M) ? PRIV_M : PRIV_U;
     end
 
     always @(*) begin
@@ -223,7 +226,7 @@ module csr_file (
                 // MPP <= 00
                 mstatus[12:11] <= 2'b00;
                 priv_mode_q <= mstatus[12:11];
-            end else if (csr_en) begin
+            end else if (csr_en && (csr_cmd != CSR_CMD_NONE)) begin
                 case (csr_addr)
                     CSR_MSTATUS: begin
                         mstatus <= mstatus_wr_value;
@@ -234,7 +237,8 @@ module csr_file (
                     end
 
                     CSR_MTVEC: begin
-                        mtvec <= csr_new;
+                        // Direct mode only; readback must match redirect behavior.
+                        mtvec <= {csr_new[31:2], 2'b00};
                     end
 
                     CSR_MSCRATCH: begin
@@ -276,7 +280,8 @@ module csr_file (
     assign mscratch_o   = mscratch;
     assign current_priv_o = priv_mode_q;
 
-    assign global_mie_o = mstatus[3];
+    // Machine interrupts are globally enabled below M-mode regardless of MIE.
+    assign global_mie_o = (priv_mode_q != PRIV_M) | mstatus[3];
     assign msie_en_o    = mie[3];
     assign mtie_en_o    = mie[7];
     assign meie_en_o    = mie[11];

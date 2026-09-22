@@ -130,6 +130,10 @@ vvp ./build_verification/icache_pipeline_tb.out `
   +ASSERT_EN=1
 ```
 
+`MEMFILE`、trace 與 coverage 路徑目前可容納 1024 bytes。相對 image 路徑會搜尋目前與最多六層父目錄；
+明確指定卻找不到的 `MEMFILE` 會報錯，不會改載入預設韌體。含空白的 plusarg 請整個加上引號。
+`tools.test_verification_tools` 包含長路徑、父目錄搜尋與缺失 image 的 Icarus 整合測試。
+
 程式在完成時必須把明確的 signature 放進指定 register，並避免該 register 後續被 terminal loop 改寫。推薦：
 
 ```c
@@ -176,7 +180,8 @@ vvp ./build_verification/icache_pipeline_tb.out `
   -SimExe ./build_verification/icache_pipeline_tb.out
 ```
 
-使用 `-Compile 0` 的原因是讓正式測試明確使用第 2 節已成功 elaboration 的 executable；script 內建 source list 若與不同歷史 checkout 的 MIG filename 不一致，不應讓 infrastructure 問題被誤判成 DUT regression。
+`-Compile 0` 可重用已編譯的 executable。預設 `-Compile 1` 現在會從 repository 根目錄取得主線 RTL，
+明確指定 `icache_pipeline_tb` 與 `FAST_SIM`，不再依賴歷史 DDR3 source list；修改 RTL 後應重新編譯。
 
 輸出：
 
@@ -221,6 +226,8 @@ Mode : RAND_MEM=1 ASSERT_EN=1
 5. 產生 `report.txt`。
 
 未提供 reference trace 時，differential status 是 `SKIP`，不是 PASS，也不是 DUT FAIL。報告必須明確寫「functional regression PASS、differential SKIP」。
+若已指定 `-RefTraceDir` 卻缺少檔案或 Python，則判為 FAIL。預設 `-DiffSquashDup 0` 保留每筆 commit，
+避免掩蓋重複提交；空 trace、超出 RV32 範圍的 register/value 也會判為 FAIL。
 
 ## 10. Commit trace
 

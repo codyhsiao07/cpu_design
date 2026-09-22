@@ -29,6 +29,14 @@ flowchart TB
 
 ## 2. 通用 Icarus 執行方式
 
+目前也可直接使用 `python tools/run_regression.py --suite unit` 跑完本頁 20 個 unit/subsystem TB，
+用 `--suite cpu --seed-count 5` 跑 CPU 與隨機時序；`--suite firmware` 會編譯並實際執行
+SYSTEM／U-mode IRQ、Lua numeric port 與八指令 RV32M smoke。省略 `--suite` 則全部執行。
+每個編譯／模擬程序都有 wall-clock timeout，結果寫入 `build_regression/summary.json`。
+
+大型 boot image 可額外使用 `--boot-image build_rtos_apps/lua/rtos_lua.mem`，由 host 的 zlib
+計算長度／CRC，傳入 `uart_bootloader_large_crc_tb` 的參數；不必手動同步硬編碼 CRC。
+
 在 PowerShell 中，先建立輸出目錄並取得根目錄 RTL：
 
 ```powershell
