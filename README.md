@@ -1,4 +1,4 @@
-﻿# CPU 設計專案（RV32IM + I$/D$ + L2 + DDR2 MIG）
+﻿# CPU 設計專案（RV32IM + I$/D$ + L2 + DDR2 MIG）(後續延伸)
 
 本專案目前主線是整合式 5-stage RV32IM CPU（含 Zicsr 與精簡 machine-mode CSR），包含：
 - L1 I-Cache：`icache.v`（由 `icache_top.v` 包裝）
@@ -108,14 +108,14 @@ make mem SRC=OS/main.c OUT_NAME=os MEM_OUT=TEST_FILES/mem_os.mem APP_DEFINES=
 
 目前主要 RTOS demo：
 
-| Demo | 說明 |
-|---|---|
-| `rtos_smoke.mem` | UART queue producer/consumer smoke test |
-| `platform` profile | 大型軟體移植前綜合自測：heap、同步原語、timer、event/stream、診斷與 UART IRQ |
-| `console` profile | 可透過 UART 操作的正式 RTOS Console，含命令、Queue worker 與狀態監測 |
-| `lua` profile | Lua 5.4.8 + FreeRTOS UART REPL／64 KiB `.lua` 上傳器，可動態切換腳本、呼叫 `rtos.*` API，並執行 UART 互動遊戲 |
-| `rtos_vga_demo.mem` | 三個 FreeRTOS task 各自更新 VGA 左/中/右區塊 |
-| `rtos_vga_queue_demo.mem` | Producer task -> FreeRTOS Queue -> Renderer task -> VGA，另有 Heartbeat task |
+| Demo                      | 說明                                                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `rtos_smoke.mem`          | UART queue producer/consumer smoke test                                                                       |
+| `platform` profile        | 大型軟體移植前綜合自測：heap、同步原語、timer、event/stream、診斷與 UART IRQ                                  |
+| `console` profile         | 可透過 UART 操作的正式 RTOS Console，含命令、Queue worker 與狀態監測                                          |
+| `lua` profile             | Lua 5.4.8 + FreeRTOS UART REPL／64 KiB `.lua` 上傳器，可動態切換腳本、呼叫 `rtos.*` API，並執行 UART 互動遊戲 |
+| `rtos_vga_demo.mem`       | 三個 FreeRTOS task 各自更新 VGA 左/中/右區塊                                                                  |
+| `rtos_vga_queue_demo.mem` | Producer task -> FreeRTOS Queue -> Renderer task -> VGA，另有 Heartbeat task                                  |
 
 Queue + VGA Pipeline Demo 是目前建議展示的階段成果：
 
